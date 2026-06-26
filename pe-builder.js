@@ -1,166 +1,85 @@
-const SA=0x1000,FA=0x400,IB=0x140000000;
-function ra(v,a){return((v+a-1)/a|0)*a;}
-
-// ntdll.dll function RVAs (stable across Windows versions)
-const NTDLL={
-  NtTerminateProcess:0x9d550,NtWriteFile:0x9d0d0,NtReadFile:0x9d090,NtCreateFile:0x9da70,
-  NtClose:0x9c6d0,NtQueryInformationFile:0x9c8d0,NtSetInformationFile:0x9d620,
-};
-
-// kernel32.dll function RVAs (this machine)
-const K32={
-  ExitProcess:0x1E3B0,GetCommandLineA:0x20150,CreateFileA:0x24E60,
-  ReadFile:0x251F0,WriteFile:0x252E0,CloseHandle:0x24BF0,GetFileSize:0x25090,
-};
+const SA=0x1000,FA=0x400,IB=0x140000000n;
+const _=v=>((v+FA-1)/FA|0)*FA;
+const _s=v=>((v+SA-1)/SA|0)*SA;
 
 class PE{
-  constructor(){this.code=Buffer.alloc(0);this.data=Buffer.alloc(0);this.imports=[];this.ptrMap={};this.dataVirtSize=0;}
+  constructor(){this.code=null;this.data=null;this.imports=[];this.ptrMap={};this.dataRVA=0;this.subsys=3;}
   setCode(b){this.code=b;}
   setData(b){this.data=b;}
   addImport(dll,funcs){
-    var prefix=dll.replace(/\..*$/,'').toUpperCase();
-    this.imports.push({dll,funcs,prefix});
-    funcs.forEach(function(fn){
-      var key=dll+'.'+fn;
-      if(this.ptrMap[key]!==undefined) return;
-      this.ptrMap[key]=0x2000+Object.keys(this.ptrMap).length*8;
-    },this);
+    this.imports.push({dll,funcs});
+    for(const fn of funcs){
+      const key=dll+'.'+fn;
+      if(this.ptrMap[key]===undefined)this.ptrMap[key]=0x2000+Object.keys(this.ptrMap).length*8;
+    }
   }
   build(){
-    var cs=this.code.length,ds=this.data.length;
-    var funcList=[];
-    for(var imp of this.imports) for(var f of imp.funcs)
-      funcList.push({dll:imp.dll,fn:f,rva:NTDLL[f]||K32[f]||0});
-
-    var nf=funcList.length;
-    var ptrSz=nf*8;
-    var rvaSz=nf*4;
-
-    // Data section layout: ptr table | RVA table | user data
-    var dbase=ptrSz+rvaSz+ds;
-    var dA=ra(dbase,FA);
-    var cR=0x1000;
-    var dR=cR+0x1000;
-
-    // Resolver size: PEB walk + direct call for each function
-    // Save regs (11) + PEB walk (33) + per func (direct call ~20) + restore (11) + jmp (5)
-    var rsz=nf===0?0:60+nf*25;
-    var tcs=cs+rsz;
-    var csA=tcs>0x1000?ra(tcs,FA):0x1000;
-
-    this.cR=cR;this.dR=dR;
-    var totRaw=csA+dA;
-    var dataVirt=Math.max(this.dataVirtSize||0,dbase);
-    var sectionVirt=cR;
-    // Ensure section covers both code and data (data is at dR = cR + 0x1000)
-    var minVirtSize=dR-cR+dbase; // data section start + data size
-    var sectionVirtualSize=Math.max(ra(cs+dataVirt,SA), minVirtSize);
-    var imgS=ra(sectionVirt+sectionVirtualSize,SA);
-    var pe=Buffer.alloc(FA+totRaw+0x1000,0);
-
-    // DOS header
+    const cs=this.code?this.code.length:0,ds=this.data?this.data.length:0;
+    const cR=0x1000,textRS=_(cs),textVS=_s(cs);
+    const dR=cR+textVS; // .rdata VA = end of .text
+    const rdataRO=0x400+textRS;
+    const funcList=[],kf=[],nkf=[];
+    for(const imp of this.imports)for(const f of imp.funcs)(imp.dll==='KERNEL32.dll'?kf:nkf).push({dll:imp.dll,fn:f});
+    const all=kf.concat(nkf);const nf=all.length,nk=kf.length;
+    let sl=[];const dllFirst={};
+    for(let fi=0;fi<nk;fi++)sl.push({t:'f',fi});sl.push({t:'t'});
+    let pD=null;
+    for(let fi=nk;fi<nf;fi++){const d=all[fi].dll;if(pD&&d!==pD)sl.push({t:'t'});if(dllFirst[d]===undefined)dllFirst[d]=sl.length;sl.push({t:'f',fi});pD=d;}
+    sl.push({t:'t'});dllFirst['KERNEL32.dll']=0;
+    const iatSz=sl.length*8;const fiSlot={};
+    for(let si=0;si<sl.length;si++)if(sl[si].t==='f')fiSlot[sl[si].fi]=si;
+    let hnOff=0;for(let fi=0;fi<nf;fi++)hnOff+=2+all[fi].fn.length+1;
+    const hnBuf=Buffer.alloc(hnOff,0);hnOff=0;
+    for(let fi=0;fi<nf;fi++){const fn=all[fi].fn;hnBuf.writeUInt16LE(0,hnOff);hnOff+=2;for(let j=0;j<fn.length;j++)hnBuf[hnOff++]=fn.charCodeAt(j);hnBuf[hnOff++]=0;}
+    const iat=Buffer.alloc(iatSz,0);
+    for(let fi=0;fi<nf;fi++){let off=0;for(let j=0;j<fi;j++)off+=2+all[j].fn.length+1;iat.writeUInt32LE(dR+iatSz+off,fiSlot[fi]*8);}
+    for(const imp of this.imports)for(const f of imp.funcs){const fi=all.findIndex(x=>x.dll===imp.dll&&x.fn===f);if(fi>=0)this.ptrMap[imp.dll+'.'+f]=dR+fiSlot[fi]*8;}
+    const dllNames=[];for(const imp of this.imports)if(dllNames.indexOf(imp.dll)<0)dllNames.push(imp.dll);
+    const dllStrBuf=Buffer.alloc(8192,0);const dllStrMap={};let dllOff=0;
+    for(const dn of dllNames){dllStrMap[dn]=dllOff;Buffer.from(dn+'\0','ascii').copy(dllStrBuf,dllOff);dllOff+=dn.length+1;}
+    const iidBuf=Buffer.alloc((dllNames.length+1)*20,0);
+    for(let dni=0;dni<dllNames.length;dni++){const dn=dllNames[dni];const nameRVA=dR+iatSz+hnBuf.length+dllStrMap[dn];const slotOff=dllFirst[dn]*8;const ftRVA=dR+slotOff;iidBuf.writeUInt32LE(nameRVA,dni*20+12);iidBuf.writeUInt32LE(ftRVA,dni*20);iidBuf.writeUInt32LE(ftRVA,dni*20+16);}
+    const dataOff=_(iatSz+hnBuf.length+dllOff+iidBuf.length);
+    const rdataRS=_(dataOff+ds),rdataVS=_s(dataOff+ds);
+    const imgSize=_s(dR+rdataVS);
+    const rawEnd=rdataRO+rdataRS;const pe=Buffer.alloc(rawEnd+0x1000,0);
     pe[0]=0x4D;pe[1]=0x5A;pe.writeUInt32LE(0xF0,0x3C);
     pe[0xF0]=0x50;pe[0xF1]=0x45;pe[0xF2]=0;pe[0xF3]=0;
-    pe.writeUInt16LE(0x8664,0xF4);pe.writeUInt16LE(1,0xF6);
-    pe.writeUInt32LE(0,0xF8);pe.writeUInt32LE(0,0xFC);pe.writeUInt32LE(0,0x100);
+    pe.writeUInt16LE(0x8664,0xF4);pe.writeUInt16LE(2,0xF6);
     pe.writeUInt16LE(0xF0,0x104);pe.writeUInt16LE(0x22,0x106);
-
-    var oh=0x118;
-    pe.writeUInt16LE(0x20B,oh+0);
-    pe.writeUInt8(14,oh+2);pe.writeUInt8(0,oh+3);
-    pe.writeUInt32LE(tcs,oh+4);pe.writeUInt32LE(dbase,oh+8);pe.writeUInt32LE(0,oh+12);
+    const oh=0x108;
+    pe.writeUInt16LE(0x20B,oh);pe.writeUInt8(14,oh+2);
+    pe.writeUInt32LE(cs,oh+4);pe.writeUInt32LE(ds,oh+8);
     pe.writeUInt32LE(cR,oh+16);pe.writeUInt32LE(cR,oh+20);
-    pe.writeBigInt64LE(BigInt(IB),oh+24);
+    pe.writeBigInt64LE(IB,oh+24);
     pe.writeUInt32LE(SA,oh+32);pe.writeUInt32LE(FA,oh+36);
     pe.writeUInt16LE(6,oh+40);pe.writeUInt16LE(0,oh+42);
     pe.writeUInt16LE(0,oh+44);pe.writeUInt16LE(0,oh+46);
     pe.writeUInt16LE(6,oh+48);pe.writeUInt16LE(0,oh+50);
-    pe.writeUInt32LE(0,oh+52);
-    pe.writeUInt32LE(imgS,oh+56);    pe.writeUInt32LE(0x400,oh+60);
-    pe.writeUInt32LE(0,oh+64);
-    pe.writeUInt16LE(3,oh+68);pe.writeUInt16LE(0x40,oh+70);
-    pe.writeBigInt64LE(BigInt(0x100000),oh+72);
-    pe.writeBigInt64LE(BigInt(0x1000),oh+80);
-    pe.writeBigInt64LE(BigInt(0x100000),oh+88);
-    pe.writeBigInt64LE(BigInt(0x1000),oh+96);
-    pe.writeUInt32LE(0,oh+0x68);pe.writeUInt32LE(16,oh+0x6C);
-    for(var i=0;i<16;i++){pe.writeUInt32LE(0,oh+0x70+i*8);pe.writeUInt32LE(0,oh+0x74+i*8);}
-
-    var sh=0x1F8;
-    pe.write('.text\0\0\0',sh,8);
-    pe.writeUInt32LE(sectionVirtualSize,sh+8);pe.writeUInt32LE(sectionVirt,sh+12);
-    pe.writeUInt32LE(csA+dA,sh+16);pe.writeUInt32LE(FA,sh+20);
-    pe.writeUInt32LE(0,sh+24);pe.writeUInt32LE(0,sh+28);
-    pe.writeUInt16LE(0,sh+32);pe.writeUInt16LE(0,sh+34);
-    pe.writeUInt32LE(0xE8000060,sh+36);
-    pe.writeUInt32LE(0,sh+76);
-
-    // === PEB WALK RESOLVER ===
-    // Uses PEB to find ntdll, then calls each function directly
-    var off=FA;
-    if(nf>0){
-      // Save registers
-      for(var ri of [0,1,2,8,9,10,11]){
-        if(ri<8) pe[off++]=0x50|ri;
-        else{pe[off++]=0x41;pe[off++]=0x50|(ri&7);}
-      }
-
-      // PEB walk: gs:[0x60] -> PEB -> Ldr -> InLoadOrderModuleList -> skip 1 (exe->ntdll) -> DllBase
-      pe[off++]=0x65;pe[off++]=0x48;pe[off++]=0x8B;pe[off++]=0x04;pe[off++]=0x25;
-      pe.writeUInt32LE(0x60,off);off+=4;
-      pe[off++]=0x48;pe[off++]=0x8B;pe[off++]=0x40;pe[off++]=0x18;
-      pe[off++]=0x48;pe[off++]=0x8B;pe[off++]=0x40;pe[off++]=0x10;
-      pe[off++]=0x48;pe[off++]=0x8B;pe[off++]=0x00;
-      pe[off++]=0x48;pe[off++]=0x8B;pe[off++]=0x40;pe[off++]=0x30;
-      pe[off++]=0x49;pe[off++]=0x89;pe[off++]=0xC3; // r11 = ntdll base
-
-      // For each function: store to ptr table
-      for(var fi=0;fi<nf;fi++){
-        // mov r10, r11 (copy ntdll base - r11 is always ntdll base)
-        pe[off++]=0x4D;pe[off++]=0x89;pe[off++]=0xDA;
-        // mov r11, imm32 (RVA)
-        pe[off++]=0x49;pe[off++]=0xC7;pe[off++]=0xC3;
-        pe.writeUInt32LE(funcList[fi].rva,off);off+=4;
-        // add r11, r10 (ntdll base + RVA)
-        pe[off++]=0x4D;pe[off++]=0x01;pe[off++]=0xD3;
-        // Store to ptr table
-        var ptrVA=dR+fi*8;
-        var stVA=cR+(off-FA);
-        pe[off++]=0x4C;pe[off++]=0x89;pe[off++]=0x1D;
-        pe.writeUInt32LE(ptrVA-(stVA+7),off);off+=4;
-        // mov r11, r10 (restore ntdll base for next iteration)
-        pe[off++]=0x4D;pe[off++]=0x89;pe[off++]=0xD3;
-      }
-
-      // Restore registers
-      for(var ri of [11,10,9,8,2,1,0]){
-        if(ri<8) pe[off++]=0x58|ri;
-        else{pe[off++]=0x41;pe[off++]=0x58|(ri&7);}
-      }
-
-      // Jump to user code
-      var userVA=cR+(off-FA)+5;
-      var jmpVA=cR+(off-FA);
-      pe[off++]=0xE9;pe.writeUInt32LE(userVA-(jmpVA+5),off);off+=4;
-    }
-
-    this.code.copy(pe,FA+(off-FA));
-
-    // Write RVA table
-    if(nf>0){
-      var rvaOff=FA+0x1000+ptrSz; // after code section + ptr table
-      for(var i=0;i<nf;i++){
-        pe.writeUInt32LE(funcList[i].rva,rvaOff+i*4);
-      }
-    }
-
-    // Copy user data after ptr table and RVA table
-    if(this.data && this.data.length>0){
-      this.data.copy(pe,FA+0x1000+ptrSz+rvaSz);
-    }
-
-    this.actualResolverSize=rsz;
-    return pe.slice(0,FA+totRaw);
+    pe.writeUInt32LE(imgSize,oh+56);pe.writeUInt32LE(0x400,oh+60);
+    pe.writeUInt16LE(this.subsys,oh+0x44);pe.writeUInt16LE(0x40,oh+0x46);
+    pe.writeBigInt64LE(0x100000n,oh+0x48);pe.writeBigInt64LE(0x1000n,oh+0x50);
+    pe.writeBigInt64LE(0x100000n,oh+0x58);pe.writeBigInt64LE(0x1000n,oh+0x60);
+    pe.writeUInt32LE(16,oh+0x6C);
+    for(let i=0;i<16;i++){pe.writeUInt32LE(0,oh+0x70+i*8);pe.writeUInt32LE(0,oh+0x74+i*8);}
+    pe.writeUInt32LE(dR+iatSz+hnBuf.length+dllOff,oh+0x78);pe.writeUInt32LE(iidBuf.length,oh+0x7C);
+    pe.writeUInt32LE(dR,oh+0x70+12*8);pe.writeUInt32LE(iatSz,oh+0x74+12*8);
+    const sh=0x1F8;
+    '.text\0\0\0'.split('').forEach((c,i)=>pe[sh+i]=c.charCodeAt(0));
+    pe.writeUInt32LE(textVS,sh+8);pe.writeUInt32LE(cR,sh+12);
+    pe.writeUInt32LE(textRS,sh+16);pe.writeUInt32LE(0x400,sh+20);
+    pe.writeUInt32LE(0x60000020,sh+36);
+    const sh2=sh+40;
+    '.rdata\0\0'.split('').forEach((c,i)=>pe[sh2+i]=c.charCodeAt(0));
+    pe.writeUInt32LE(rdataVS,sh2+8);pe.writeUInt32LE(dR,sh2+12);
+    pe.writeUInt32LE(rdataRS,sh2+16);pe.writeUInt32LE(rdataRO,sh2+20);
+    pe.writeUInt32LE(0xE0000040,sh2+36);
+    if(this.code)this.code.copy(pe,0x400);
+    iat.copy(pe,rdataRO);hnBuf.copy(pe,rdataRO+iatSz);dllStrBuf.slice(0,dllOff).copy(pe,rdataRO+iatSz+hnBuf.length);
+    iidBuf.copy(pe,rdataRO+iatSz+hnBuf.length+dllOff);
+    if(this.data)this.data.copy(pe,rdataRO+dataOff);
+    this.dataRVA=dR+dataOff;
+    return pe.slice(0,rawEnd);
   }
 }
 module.exports={PE};
