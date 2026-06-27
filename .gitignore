@@ -19,9 +19,6 @@ out*
 stderr
 stdout
 H
-STATUS.md
-layout.md
-spec.md
 _*.js
 _*.bin
 experiments/
