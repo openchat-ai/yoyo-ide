@@ -1,5 +1,5 @@
 param(
-  [string]$Exe = ".\mini-kyc.exe",
+  [string]$Exe = ".\build\yoyo.exe",
   [string]$InputFile = "",
   [int]$TimeoutMs = 5000
 )

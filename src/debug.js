@@ -4,7 +4,7 @@
 // crash analysis, and state introspection.  Minimal dependencies (koffi only).
 // ═══════════════════════════════════════════════════════════════════════════
 // Usage:
-//   node debug.js                  - crash analysis mode (run mini-kyc.exe, dump on crash)
+//   node debug.js                  - crash analysis mode (run yoyo.exe, dump on crash)
 //   node debug.js --checkpoints    - INT3 checkpoint mode (place checkpoints at safe RVAs)
 //   node debug.js --step           - single-step mode (one instruction at a time)
 //   node debug.js --help           - show full usage
@@ -20,7 +20,7 @@ try { koffi = require('koffi'); } catch {
   process.exit(1);
 }
 
-const OUT_DIR = path.join(__dirname, 'debug-out');
+const OUT_DIR = path.join(__dirname, '..', 'debug-out');
 if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1485,9 +1485,9 @@ The debugger automatically:
     return;
   }
 
-  const exePath = path.join(__dirname, 'mini-kyc.exe');
+  const exePath = path.join(__dirname, '..', 'build', 'yoyo.exe');
   if (!fs.existsSync(exePath)) {
-    console.error('[!] mini-kyc.exe not found');
+    console.error('[!] yoyo.exe not found');
     process.exit(1);
   }
 

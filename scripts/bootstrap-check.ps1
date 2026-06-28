@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 $ROOT = Split-Path -Parent $PSScriptRoot
 Set-Location $ROOT
 
-$TMP = Join-Path $env:TEMP "mini-kyc-bootstrap"
+$TMP = Join-Path $env:TEMP "yoyo-bootstrap"
 if (-not (Test-Path $TMP)) { New-Item -ItemType Directory -Path $TMP | Out-Null }
 Get-ChildItem $TMP -File | Remove-Item -Force
 
@@ -18,37 +18,37 @@ function RunNode {
     }
 }
 
-Write-Host "[1/4] Generate mini-kyc.ty (first)"
-RunNode @("create-mini-kyc3.js")
-Copy-Item projects/mini-kyc.ty (Join-Path $TMP "mini-kyc-1.ty")
+Write-Host "[1/4] Generate yoyo.ty (first)"
+RunNode @("src/yoyo-gen.js")
+Copy-Item projects/yoyo.ty (Join-Path $TMP "yoyo-1.ty")
 
-Write-Host "[2/4] Generate mini-kyc.ty (second)"
-RunNode @("create-mini-kyc3.js")
-Copy-Item projects/mini-kyc.ty (Join-Path $TMP "mini-kyc-2.ty")
+Write-Host "[2/4] Generate yoyo.ty (second)"
+RunNode @("src/yoyo-gen.js")
+Copy-Item projects/yoyo.ty (Join-Path $TMP "yoyo-2.ty")
 
 Write-Host "[3/4] Compile same source twice"
-RunNode @("ky-compiler.js", "projects/mini-kyc.ty", (Join-Path $TMP "mini-kyc-a.exe"))
-RunNode @("ky-compiler.js", "projects/mini-kyc.ty", (Join-Path $TMP "mini-kyc-b.exe"))
+RunNode @("src/yoyo.js", "projects/yoyo.ty", (Join-Path $TMP "yoyo-a.exe"))
+RunNode @("src/yoyo.js", "projects/yoyo.ty", (Join-Path $TMP "yoyo-b.exe"))
 
 Write-Host "[4/4] Determinism check"
-$SRC_CMP = (Get-FileHash (Join-Path $TMP "mini-kyc-1.ty") -Algorithm SHA256).Hash -eq `
-           (Get-FileHash (Join-Path $TMP "mini-kyc-2.ty") -Algorithm SHA256).Hash
-$EXE_CMP = (Get-FileHash (Join-Path $TMP "mini-kyc-a.exe") -Algorithm SHA256).Hash -eq `
-           (Get-FileHash (Join-Path $TMP "mini-kyc-b.exe") -Algorithm SHA256).Hash
+$SRC_CMP = (Get-FileHash (Join-Path $TMP "yoyo-1.ty") -Algorithm SHA256).Hash -eq `
+           (Get-FileHash (Join-Path $TMP "yoyo-2.ty") -Algorithm SHA256).Hash
+$EXE_CMP = (Get-FileHash (Join-Path $TMP "yoyo-a.exe") -Algorithm SHA256).Hash -eq `
+           (Get-FileHash (Join-Path $TMP "yoyo-b.exe") -Algorithm SHA256).Hash
 
-$SRC_SHA_1 = (Get-FileHash (Join-Path $TMP "mini-kyc-1.ty") -Algorithm SHA256).Hash
-$SRC_SHA_2 = (Get-FileHash (Join-Path $TMP "mini-kyc-2.ty") -Algorithm SHA256).Hash
-$EXE_SHA_A = (Get-FileHash (Join-Path $TMP "mini-kyc-a.exe") -Algorithm SHA256).Hash
-$EXE_SHA_B = (Get-FileHash (Join-Path $TMP "mini-kyc-b.exe") -Algorithm SHA256).Hash
+$SRC_SHA_1 = (Get-FileHash (Join-Path $TMP "yoyo-1.ty") -Algorithm SHA256).Hash
+$SRC_SHA_2 = (Get-FileHash (Join-Path $TMP "yoyo-2.ty") -Algorithm SHA256).Hash
+$EXE_SHA_A = (Get-FileHash (Join-Path $TMP "yoyo-a.exe") -Algorithm SHA256).Hash
+$EXE_SHA_B = (Get-FileHash (Join-Path $TMP "yoyo-b.exe") -Algorithm SHA256).Hash
 
 Write-Host ""
 Write-Host "=== bootstrap-check report ==="
-Write-Host "mini-kyc.ty #1 sha256: $SRC_SHA_1"
-Write-Host "mini-kyc.ty #2 sha256: $SRC_SHA_2"
-Write-Host "mini-kyc.ty deterministic: $(if ($SRC_CMP) {'PASS'} else {'FAIL'})"
+Write-Host "yoyo.ty #1 sha256: $SRC_SHA_1"
+Write-Host "yoyo.ty #2 sha256: $SRC_SHA_2"
+Write-Host "yoyo.ty deterministic: $(if ($SRC_CMP) {'PASS'} else {'FAIL'})"
 Write-Host ""
-Write-Host "mini-kyc-a.exe sha256: $EXE_SHA_A"
-Write-Host "mini-kyc-b.exe sha256: $EXE_SHA_B"
+Write-Host "yoyo-a.exe sha256: $EXE_SHA_A"
+Write-Host "yoyo-b.exe sha256: $EXE_SHA_B"
 Write-Host "product deterministic: $(if ($EXE_CMP) {'PASS'} else {'FAIL'})"
 
 $REPORT_FILE = Join-Path $ROOT "bootstrap-report.txt"
@@ -58,13 +58,13 @@ $BASELINE_FILE = Join-Path $ROOT "bootstrap-baseline.txt"
 $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 @"
 timestamp: $timestamp
-mini-kyc.ty.sha256: $SRC_SHA_1
-mini-kyc.exe.sha256: $EXE_SHA_A
-mini-kyc.ty.cmp: $(if ($SRC_CMP) {'0'} else {'1'})
-mini-kyc.exe.cmp: $(if ($EXE_CMP) {'0'} else {'1'})
+yoyo.ty.sha256: $SRC_SHA_1
+yoyo.exe.sha256: $EXE_SHA_A
+yoyo.ty.cmp: $(if ($SRC_CMP) {'0'} else {'1'})
+yoyo.exe.cmp: $(if ($EXE_CMP) {'0'} else {'1'})
 "@ | Set-Content $REPORT_FILE -NoNewline
 
-$keys = @("mini-kyc.ty.sha256","mini-kyc.exe.sha256","mini-kyc.ty.cmp","mini-kyc.exe.cmp")
+$keys = @("yoyo.ty.sha256","yoyo.exe.sha256","yoyo.ty.cmp","yoyo.exe.cmp")
 $diff = @()
 $diff += "=== bootstrap-report diff ==="
 $diff += "generated_at: $timestamp"
@@ -118,10 +118,10 @@ if ($LOCK_MODE) {
 
 if ($UPDATE_BASELINE) {
     @(
-        "mini-kyc.ty.sha256: $SRC_SHA_1"
-        "mini-kyc.exe.sha256: $EXE_SHA_A"
-        "mini-kyc.ty.cmp: $(if ($SRC_CMP) {'0'} else {'1'})"
-        "mini-kyc.exe.cmp: $(if ($EXE_CMP) {'0'} else {'1'})"
+        "yoyo.ty.sha256: $SRC_SHA_1"
+        "yoyo.exe.sha256: $EXE_SHA_A"
+        "yoyo.ty.cmp: $(if ($SRC_CMP) {'0'} else {'1'})"
+        "yoyo.exe.cmp: $(if ($EXE_CMP) {'0'} else {'1'})"
     ) | Set-Content $BASELINE_FILE
     Write-Host "baseline updated: $BASELINE_FILE"
 }

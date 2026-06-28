@@ -16,7 +16,7 @@ const IAT = {};
 FUNCS.forEach((f, i) => { IAT[f] = IAT_BASE + i * 8; });
 
 // ─── Build embedded PE template (size varies with TEXT_VS) ────────────────────
-// This is what mini-kyc.exe copies into the output buffer when compiling a program.
+// This is what yoyo.exe copies into the output buffer when compiling a program.
 const tplPE = new PE();
 tplPE.subsys = 3;
 tplPE.addImport('KERNEL32.dll', FUNCS);
@@ -50,7 +50,7 @@ function buildStartup() {
 const startupBlob = buildStartup();
 // startupBlob length varies with IAT_BASE; use actual .length for copy
 
-// Data section offsets (in mini-kyc.exe's 64KB data section)
+// Data section offsets (in yoyo.exe's 64KB data section)
 const PE_BLOB_OFF      = 0x4000;  // embedded PE template
 const STARTUP_BLOB_OFF = 0xCC00;  // startup code blob
 
@@ -1568,7 +1568,7 @@ B();
 // ════════════════════════════════════════════════════════════════════════════════
 // Write output file
 // ════════════════════════════════════════════════════════════════════════════════
-const outPath = path.join(__dirname, 'projects', 'mini-kyc.ty');
+const outPath = path.join(__dirname, '..', 'projects', 'yoyo.ty');
 const content = lines.join('\n');
 fs.writeFileSync(outPath, content);
 console.log('Written ' + outPath);

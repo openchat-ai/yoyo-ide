@@ -1,10 +1,10 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-TMP_DIR="/tmp/mini-kyc-bootstrap"
+TMP_DIR="/tmp/yoyo-bootstrap"
 mkdir -p "$TMP_DIR"
 
 STRICT_MODE=0
@@ -28,79 +28,79 @@ for arg in "$@"; do
       UPDATE_BASELINE=1
       ;;
     *)
-      echo "鏈煡鍙傛暟: $arg"
-      echo "鐢ㄦ硶: $0 [--strict] [--lock] [--update-baseline]"
+      echo "未知参数: $arg"
+      echo "用法: $0 [--strict] [--lock] [--update-baseline]"
       exit 2
       ;;
   esac
 done
 
 if [[ $LOCK_MODE -eq 1 && $STRICT_MODE -ne 1 ]]; then
-  echo "--lock 渚濊禆 --strict"
-  echo "鐢ㄦ硶: $0 --strict [--lock] [--update-baseline]"
+  echo "--lock 依赖 --strict"
+  echo "用法: $0 --strict [--lock] [--update-baseline]"
   exit 2
 fi
 
 if [[ $UPDATE_BASELINE -eq 1 && $STRICT_MODE -ne 1 ]]; then
-  echo "--update-baseline 渚濊禆 --strict"
-  echo "鐢ㄦ硶: $0 --strict [--lock] [--update-baseline]"
+  echo "--update-baseline 依赖 --strict"
+  echo "用法: $0 --strict [--lock] [--update-baseline]"
   exit 2
 fi
 
-echo "[1/4] 鐢熸垚 mini-kyc.ky锛堢涓€娆★級"
-node create-mini-kyc3.js >/dev/null
-cp projects/mini-kyc.ky "$TMP_DIR/mini-kyc-1.ky"
+echo "[1/4] 生成 yoyo.ty（第一次）"
+node src/yoyo-gen.js >/dev/null
+cp projects/yoyo.ty "$TMP_DIR/yoyo-1.ty"
 
-echo "[2/4] 鐢熸垚 mini-kyc.ky锛堢浜屾锛?
-node create-mini-kyc3.js >/dev/null
-cp projects/mini-kyc.ky "$TMP_DIR/mini-kyc-2.ky"
+echo "[2/4] 生成 yoyo.ty（第二次）"
+node src/yoyo-gen.js >/dev/null
+cp projects/yoyo.ty "$TMP_DIR/yoyo-2.ty"
 
-echo "[3/4] 鐢ㄥ悓涓€婧愮爜缂栬瘧涓ゆ"
-node ky-compiler.js projects/mini-kyc.ky "$TMP_DIR/mini-kyc-a.exe" >/dev/null
-node ky-compiler.js projects/mini-kyc.ky "$TMP_DIR/mini-kyc-b.exe" >/dev/null
+echo "[3/4] 用同一源码编译两次"
+node src/yoyo.js projects/yoyo.ty "$TMP_DIR/yoyo-a.exe" >/dev/null
+node src/yoyo.js projects/yoyo.ty "$TMP_DIR/yoyo-b.exe" >/dev/null
 
-echo "[4/4] 涓€鑷存€ф鏌?
-cmp -s "$TMP_DIR/mini-kyc-1.ky" "$TMP_DIR/mini-kyc-2.ky"
+echo "[4/4] 一致性检�?
+cmp -s "$TMP_DIR/yoyo-1.ty" "$TMP_DIR/yoyo-2.ty"
 KY_CMP_EXIT=$?
 
-cmp -s "$TMP_DIR/mini-kyc-a.exe" "$TMP_DIR/mini-kyc-b.exe"
+cmp -s "$TMP_DIR/yoyo-a.exe" "$TMP_DIR/yoyo-b.exe"
 EXE_CMP_EXIT=$?
 
-KY_SHA_1="$(sha256sum "$TMP_DIR/mini-kyc-1.ky" | awk '{print $1}')"
-KY_SHA_2="$(sha256sum "$TMP_DIR/mini-kyc-2.ky" | awk '{print $1}')"
-EXE_SHA_A="$(sha256sum "$TMP_DIR/mini-kyc-a.exe" | awk '{print $1}')"
-EXE_SHA_B="$(sha256sum "$TMP_DIR/mini-kyc-b.exe" | awk '{print $1}')"
+KY_SHA_1="$(sha256sum "$TMP_DIR/yoyo-1.ty" | awk '{print $1}')"
+KY_SHA_2="$(sha256sum "$TMP_DIR/yoyo-2.ty" | awk '{print $1}')"
+EXE_SHA_A="$(sha256sum "$TMP_DIR/yoyo-a.exe" | awk '{print $1}')"
+EXE_SHA_B="$(sha256sum "$TMP_DIR/yoyo-b.exe" | awk '{print $1}')"
 
 echo
-echo "=== bootstrap-check 鎶ュ憡 ==="
-echo "mini-kyc.ky #1 sha256: $KY_SHA_1"
-echo "mini-kyc.ky #2 sha256: $KY_SHA_2"
-echo "mini-kyc.ky 涓€鑷存€? $([[ $KY_CMP_EXIT -eq 0 ]] && echo PASS || echo FAIL)"
+echo "=== bootstrap-check 报告 ==="
+echo "yoyo.ty #1 sha256: $KY_SHA_1"
+echo "yoyo.ty #2 sha256: $KY_SHA_2"
+echo "yoyo.ty 一致�? $([[ $KY_CMP_EXIT -eq 0 ]] && echo PASS || echo FAIL)"
 echo
-echo "mini-kyc-a.exe sha256: $EXE_SHA_A"
-echo "mini-kyc-b.exe sha256: $EXE_SHA_B"
-echo "浜х墿涓€鑷存€? $([[ $EXE_CMP_EXIT -eq 0 ]] && echo PASS || echo FAIL)"
+echo "yoyo-a.exe sha256: $EXE_SHA_A"
+echo "yoyo-b.exe sha256: $EXE_SHA_B"
+echo "产物一致�? $([[ $EXE_CMP_EXIT -eq 0 ]] && echo PASS || echo FAIL)"
 
 if [[ $STRICT_MODE -eq 1 ]]; then
   {
     echo "timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    echo "mini-kyc.ky.sha256: $KY_SHA_1"
-    echo "mini-kyc.exe.sha256: $EXE_SHA_A"
-    echo "mini-kyc.ky.cmp: $KY_CMP_EXIT"
-    echo "mini-kyc.exe.cmp: $EXE_CMP_EXIT"
+    echo "yoyo.ty.sha256: $KY_SHA_1"
+    echo "yoyo.exe.sha256: $EXE_SHA_A"
+    echo "yoyo.ty.cmp: $KY_CMP_EXIT"
+    echo "yoyo.exe.cmp: $EXE_CMP_EXIT"
   } > "$REPORT_FILE"
 
   keys=(
-    "mini-kyc.ky.sha256"
-    "mini-kyc.exe.sha256"
-    "mini-kyc.ky.cmp"
-    "mini-kyc.exe.cmp"
+    "yoyo.ty.sha256"
+    "yoyo.exe.sha256"
+    "yoyo.ty.cmp"
+    "yoyo.exe.cmp"
   )
 
   BASELINE_CHANGED=0
   CHANGED=0
   {
-    echo "=== bootstrap-report 宸紓 ==="
+    echo "=== bootstrap-report 差异 ==="
     echo "generated_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     if [[ ! -f "$BASELINE_FILE" ]]; then
       echo "baseline: missing"
@@ -139,22 +139,22 @@ if [[ $STRICT_MODE -eq 1 ]]; then
   fi
 
   echo
-  echo "strict 鎶ュ憡宸插啓鍏? $REPORT_FILE"
-  echo "strict 宸紓宸插啓鍏? $DIFF_FILE"
+  echo "strict 报告已写�? $REPORT_FILE"
+  echo "strict 差异已写�? $DIFF_FILE"
   if [[ $UPDATE_BASELINE -eq 1 ]]; then
-    echo "strict 鍩虹嚎宸叉洿鏂? $BASELINE_FILE"
+    echo "strict 基线已更�? $BASELINE_FILE"
   fi
 
   if [[ $LOCK_MODE -eq 1 ]]; then
     if [[ ! -f "$BASELINE_FILE" ]]; then
-      echo "lock 妯″紡澶辫触: 鏈壘鍒板熀绾挎枃浠?$BASELINE_FILE"
+      echo "lock 模式失败: 未找到基线文�?$BASELINE_FILE"
       exit 3
     fi
     if [[ $BASELINE_CHANGED -ne 0 ]]; then
-      echo "lock 妯″紡澶辫触: 褰撳墠缁撴灉涓庡熀绾垮瓨鍦ㄥ樊寮?
+      echo "lock 模式失败: 当前结果与基线存在差�?
       exit 4
     fi
-    echo "lock 妯″紡: PASS锛堜笌鍩虹嚎涓€鑷达級"
+    echo "lock 模式: PASS（与基线一致）"
   fi
 fi
 

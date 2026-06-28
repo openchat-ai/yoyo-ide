@@ -1,5 +1,5 @@
 param(
-  [string]$InputKy = "projects\mini-kyc.ty",
+  [string]$InputKy = "projects\yoyo.ty",
   [int]$TimeoutMs = 15000
 )
 
@@ -8,7 +8,7 @@ $IDE = Split-Path -Parent $PSScriptRoot
 Set-Location $IDE
 
 # Step 1: Clean up any previous outputs
-Remove-Item -Force "input.ky", "output.exe", "stdout.log", "stderr.log", "mini-kyc-patched.exe" -ErrorAction SilentlyContinue
+Remove-Item -Force "input.ky", "output.exe", "stdout.log", "stderr.log", "yoyo-patched.exe" -ErrorAction SilentlyContinue
 
 # Step 2: Copy input .ky to CWD as input.ky
 if (Test-Path $InputKy) {
@@ -19,10 +19,9 @@ if (Test-Path $InputKy) {
   exit 1
 }
 
-# Step 3: Run mini-kyc.exe with timeout via Start-Process
-Write-Host "[*] Running: mini-kyc.exe"
-$sw = [System.Diagnostics.Stopwatch]::StartNew()
-$proc = Start-Process -FilePath ".\mini-kyc.exe" -NoNewWindow -PassThru `
+# Step 3: Run yoyo.exe with timeout via Start-Process
+Write-Host "[*] Running: build\yoyo.exe"
+$proc = Start-Process -FilePath ".\build\yoyo.exe" -NoNewWindow -PassThru `
   -RedirectStandardOutput "stdout.log" -RedirectStandardError "stderr.log"
 Write-Host "[*] PID: $($proc.Id)"
 $exited = $proc.WaitForExit($TimeoutMs)
