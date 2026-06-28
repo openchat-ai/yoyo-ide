@@ -2,6 +2,9 @@
 
 This project currently uses a deterministic pre-bootstrap gate before true stage execution self-hosting.
 
+> See `LANGUAGE.md` for naming conventions: the language is **yoyo**, source files are
+> `.ky` (legacy) / `.ty` (future), the compiler tool is **ky compiler** / `kyc`.
+
 ## Commands
 
 1. Quick check (PowerShell on Windows; bash equivalent on WSL)

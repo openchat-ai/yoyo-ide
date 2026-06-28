@@ -2,10 +2,13 @@
 
 ## 0. TL;DR
 
-`mini-kyc` is a self-hosting compiler that takes `.ky` source text (a custom bytecode)
-and produces native Windows x86_64 `.exe` files. The compiled output runs without any
-runtime dependencies — no DLL, no CRT, no Node, no Python. The compiler itself is
-written in `.ky` and can compile its own source.
+`mini-kyc` is a self-hosting compiler that takes **yoyo** source text (`.ky` legacy /
+`.ty` future) and produces native Windows x86_64 `.exe` files. The compiled output
+runs without any runtime dependencies — no DLL, no CRT, no Node, no Python. The
+compiler itself is written in yoyo and can compile its own source.
+
+See `LANGUAGE.md` for naming conventions (yoyo language, `.ty` source, `.tyo` object,
+ky compiler).
 
 The project is bootstrapped in three stages. This document describes the architecture,
 invariants, and development workflow so future contributors (human or AI) can make
