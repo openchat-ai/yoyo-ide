@@ -1,10 +1,10 @@
 param(
-  [string]$InputKy = "projects\mini-kyc.ky",
+  [string]$InputKy = "projects\mini-kyc.ty",
   [int]$TimeoutMs = 15000
 )
 
 $ErrorActionPreference = "Stop"
-$IDE = "E:\yoyo\yoyo-ide"
+$IDE = Split-Path -Parent $PSScriptRoot
 Set-Location $IDE
 
 # Step 1: Clean up any previous outputs
