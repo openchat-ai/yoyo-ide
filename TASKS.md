@@ -88,3 +88,7 @@ gen 2/3/4 三者 byte-for-byte 完全一致（0 diff / 51200 bytes）。
 - [ ] Stage 1 lock gate 在 CI 跑通
 - [ ] Phase 2: 加剩余 opcode emitter（61 62 65 68 69 70-7A 80 84 20 50 51）
 - [ ] emitter 一致性测试基础设施（避免再出现 H_76 那种"reference vs self" mismatches）
+- [ ] **通用 CLI 文件参数**：`mini-kyc.exe` 当前硬编码读 `input.ky` 写 `output.exe`。
+      需要 Phase 2 opcode 50/51 + 动态字符串表 + 命令行参数解析
+- [ ] **字符串表通用化**：H_86/H_88/H_8A/H_8C 是 hardcoded for "input.ky"/"output.exe"，
+      应改成 data-driven

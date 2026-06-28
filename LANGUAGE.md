@@ -56,5 +56,9 @@ shortcuts; it's just "the C compiler").
 - [ ] Update `ky-compiler.js` to accept `.ty` (or both `.ty` and `.ky`)
 - [ ] Decide whether to rename `ky-compiler.js` / `mini-kyc.exe` (binary compat concerns)
 - [ ] Update scripts (`bootstrap-check.ps1`) for new extensions
+- [ ] **Generic CLI file args** (currently `mini-kyc.exe` is hardcoded to read `input.ky`
+  and write `output.exe`; needs Phase 2 opcodes 50/51 + dynamic string table)
+- [ ] **String table generalization** (H_86/H_88/H_8A/H_8C are special-cased for
+  "input.ky"/"output.exe"; should be data-driven)
 
 
