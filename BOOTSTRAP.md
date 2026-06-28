@@ -3,7 +3,8 @@
 This project currently uses a deterministic pre-bootstrap gate before true stage execution self-hosting.
 
 > See `LANGUAGE.md` for naming conventions: the language is **yoyo**, source files are
-> `.ky` (legacy) / `.ty` (future), the compiler is the **yoyo compiler** / `yoyoc`.
+> `.ky` (legacy) / `.ty` (target), and the compiler is the **yoyo compiler** (no special
+> tool name).
 
 ## Commands
 
@@ -78,7 +79,7 @@ create-mini-kyc3.js  ──生成──▶  mini-kyc.ky  ──编译──▶  
        │                                │
        └──────────  ── ── ── ── ── ── ── ┘
                           │
-                   ky-compiler.js  (yoyoc, JS 主机)
+                   ky-compiler.js  (yoyo compiler, JS 主机)
                           │
                 (JS 参考实现，第一阶段)
 ```
