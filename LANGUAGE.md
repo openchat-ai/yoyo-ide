@@ -20,6 +20,8 @@ shortcuts; it's just "the C compiler").
 
 - **`.ky`** (legacy) → **`.ty`** (target). Same letters, k→t.
 - **`.c`** → **`.o`**: source → object. Same pattern: **`.ty`** → **`.tyo`**.
+- **`ty`** can also be read as **唐尧** (Táng Yáo, legendary ancient emperor)
+  or **唐悠悠** (Táng Yōuyōu) — both fitting the "yoyo" / "悠悠" theme.
 
 ## File types in this repo
 
