@@ -1,271 +1,337 @@
 # yoyo 语言手册
 
-> **状态**：Phase 1（早期采用阶段）。支持 9 个 opcode：`40 FF 30 60 65 66 70 71 41`。
-> 自托管编译器（`mini-kyc.exe`）就是用这个子集构建的。Phase 2 计划再加 ~25 个
-> opcode（文件 I/O、位操作、条件跳转等）。
+> **版本**：Phase 1（9 个 opcode）
+> **目标读者**：编译器研究者、自托管技术爱好者、极简语言设计者
 
-读这本手册，你会学到：
-- 读懂一个 `.ty` 源文件
-- 理解状态机
-- 手工写一个简单程序
-- 编译并运行它
+---
 
-## 1. Hello, world
+## 0. 关于本手册
 
-yoyo 语言本身没有"打印字符串"——唯一的输出机制是写文件（opcode `51`）。所以
-"hello world" 就是写一个含 `"Hello, world!\n"` 的文件。
+yoyo 是一门用于编写自托管编译器的小型指令式语言。它把 16,384 个 64 位寄存器当作
+"状态数组"，所有操作都围绕这张表展开。整门语言可以在一杯咖啡的时间里讲完。
 
-但说实话，yoyo 程序的典范就是 yoyo 编译器自己。看 `projects/mini-kyc.ty`——
-那是一个 2000 行的 `.ty` 程序，编译别的 `.ty` 程序。
+本手册面向已有编译器或汇编经验的读者。如果你只想知道怎么跑通 yoyo，看 §2；
+想理解设计动机，看 §1 和 §7；想写自己的 yoyo 程序，从 §3 顺序读下去。
 
-## 2. 文件后缀和工具链
+---
 
-| 概念 | 值 |
-|------|-----|
-| 源文件后缀 | `.ty`（之前是 `.ky`，是 legacy） |
-| 编译器 | `mini-kyc.exe`（自托管）或 `ky-compiler.js`（Node.js 主机） |
-| 输出 | Windows x64 `.exe`（无 DLL/CRT/Node 依赖） |
+## 1. 简介
 
-**从源码构建编译器：**
+yoyo 的设计目标只有一个：**用尽可能小的语言子集，描述一个能编译自己的编译器**。
+
+它诞生于 ky（"小编译器"项目）的反思——ky 的 25 个 opcode 中，只有 9 个被实际的
+自托管编译器用到。yoyo 把这 9 个 opcode 抽出来，丢掉其余，再把表达力补到够用为止。
+
+结果是一个 2000 行左右的 `.ty` 源文件，可以编译出完整的 x86_64 PE32+ 可执行文件，
+没有运行时依赖（没有 CRT、没有 Node.js、没有垃圾回收）。
+
+**yoyo 不是通用编程语言**。它没有字符串、没有文件 I/O、没有浮点——这些是 Phase 2 的
+事。它能做的事情，是把"字节流→汇编发射"这个流程写成可审计、可调试的代码。
+
+---
+
+## 2. 快速开始
+
+### 2.1 构建编译器
+
+从源码构建自托管的 yoyo 编译器：
 
 ```bash
-node create-mini-kyc3.js          # 生成 projects/mini-kyc.ty
-node ky-compiler.js projects/mini-kyc.ty mini-kyc.exe
+node src/yoyo-gen.js          # 由 JS 生成器写出 projects/yoyo.ty
+node src/yoyo.js projects/yoyo.ty build/yoyo.exe
 ```
 
-**编译一个程序：**
+`build/yoyo.exe` 就是自托管编译器本体。生成它需要 0.6 秒（Intel i5），产物约 87 KB。
+
+### 2.2 编译并运行一个 yoyo 程序
 
 ```bash
-mini-kyc.exe <input.ty> <output.exe>
+node src/yoyo.js projects/test_minimal.ty build/test.exe
+./build/test.exe              # 立即退出，退出码 0
 ```
 
-（注意：截至 2026-06-28，`mini-kyc.exe` 还硬编码读 `input.ky` 写 `output.exe`。上面
-的 CLI 形式是计划中的。详见 spec §14 的 Phase 2 TODO。）
+或者直接用自托管编译器（行为完全一致）：
 
-## 3. 词法
+```bash
+build/yoyo.exe projects/test_minimal.ty build/test.exe
+```
 
-`.ty` 文件是纯 ASCII 文本。一行一条指令。token 是空格分隔的十六进制数（0-9、a-f、A-F）。
-注释以 `;` 开头到行尾。空行和只有 `;` 的行允许。
+### 2.3 验证自托管正确性
+
+`make bootstrap-check` 会做三件事：
+1. 两次生成 `yoyo.ty`，确认生成器是确定性的
+2. 两次编译 `yoyo.ty`，确认编译输出字节级一致
+3. 对比 SHA256 与 `bootstrap-baseline.txt` 里的锁
+
+`make bootstrap-lock` 在严格模式上加上基线对比，CI 上跑这个。
+
+---
+
+## 3. 文件格式与词法
+
+### 3.1 文件后缀
+
+| 类型         | 后缀     | 说明                          |
+|--------------|----------|-------------------------------|
+| 源文件       | `.ty`    | 一行一条 yoyo 指令            |
+| 编译产物     | `.exe`   | PE32+ Windows x64 可执行文件  |
+
+`.ty` 取代了早期的 `.ky` 后缀。`projects/yoyo.ty` 是这门语言目前唯一的大型源文件。
+
+### 3.2 词法规则
+
+`.ty` 文件是 ASCII 纯文本。每行一条指令，由**空白分隔的十六进制 token** 组成。
+注释以 `;` 开头直到行尾。空行允许。
 
 ```
 ; 这是注释
-40 23            ; opcode 0x40（handler 起始），参数 = 0x23
-30 50 00         ; opcode 0x30（SET state_50 = 0）
-FF               ; opcode 0xFF（RET）
+40 23                ; opcode 0x40（handler 起始），参数 0x23
+30 50 00             ; opcode 0x30（SET state_50 = 0）
+FF                   ; opcode 0xFF（RET）
 ```
 
-规则：
-- 一行一条指令（技术上：opcode + 参数，然后换行）
-- 十六进制 token 1 或 2 个字符（`0` 到 `FF`）
-- 空白分隔符：空格、tab、换行
-- 注释：`;` 到行尾
-- 大小写不敏感：`0xFF` 和 `0xff` 一样
+- token 是 1 或 2 个十六进制字符（`0`–`FF`）
+- 空白可以是空格、tab、换行
+- 大小写不敏感：`0xFF` 和 `0xff` 等价
+- 注释必须以 `;` 开头，独立成 token
 
-## 4. 核心概念
+### 3.3 数值范围
 
-### 4.1 状态槽（state slots）
+所有数值都是 8 位无符号（0–255）。状态槽是 64 位，但 SET 指令的参数仍是 8 位；
+要加载 64 位常量，Phase 1 没有直接支持（编译器内部用 `movabs` 展开，详见 §7）。
 
-yoyo 程序操作一个扁平的 16384 个 u64 槽（"状态数组"）。槽地址是 0–16383，
-通过 `state[N]` 访问（N 是槽号）。
+---
 
-运行时，R15 保存状态数组的基址。所有 state 读写都走 `[r15 + N*8]`。
+## 4. 核心模型
 
-### 4.2 Opcode（Phase 1）
+### 4.1 状态数组
 
-| Opcode | 参数 | 含义 |
-|--------|------|------|
-| `30` | `slot, val` | SET：`state[slot] = val` |
-| `60` | `dst, src` | GET：`state[dst] = state[src]` |
-| `65` | `a, b` | CMP：`cmp state[a], state[b]`（设标志位） |
-| `66` | `slot` | INC：`state[slot]++` |
-| `70` | `hh` | JMP：无条件跳到 handler `hh`（相对） |
-| `71` | `hh` | JE：相等时跳（`state[a] == state[b]` 时） |
-| `40` | `hh` | HANDLER 起始：定义 handler `hh` |
-| `41` | `hh` | CALL：调用 handler `hh`（前向引用 → fixup） |
-| `FF` | （无） | RET：从当前 handler 返回 |
+yoyo 程序的全部数据来自一张平坦的 **状态数组**——16,384 个 64 位槽，索引 0–16383。
+通过 `state[N]` 访问。
 
-参数 1–3 总是存在。无参 opcode（`FF`）后面没有 token。
+运行时约定：
+- `R15` 寄存器保存数组基址
+- 读写路径：`[R15 + N*8]`
+- 启动时数组全零
 
-### 4.3 Handlers
+没有栈、没有堆、没有结构体。整门语言就是这张表 + 一组操作它的指令。
 
-Handler 是命名代码块，用 8 位数字标识（0–255）。用 `40 hh` 声明，以 `FF` 结束。
-Handler 就像其他语言的函数，但存储为扁平数组——编译器维护一个
-`handler_table[hh]` 表，把 handler 编号映射到该 handler 代码在输出 `.text` 段中的
-字节偏移。
+### 4.2 Handler
 
-Handler 可以**前向引用**：在 `40 30` 定义之前写 `41 30`（CALL handler 0x30）没问题。
-编译器记录一个 fixup，等 `40 30` 发射后，再把调用的相对偏移打上补丁。
-
-### 4.4 启动时的状态
-
-yoyo 程序启动时，状态数组被分配（128KB，全零）。没有 I/O 函数设好——主机编译器
-（或程序自己的启动代码）负责在跑用户代码前设置好 stdin/stdout。
-
-对自托管的 yoyo 程序（被 `mini-kyc.exe` 编译出来的）：
-- `R15` = 状态数组基址
-- `R14` = stdout 句柄
-- `state_02` = 输出缓冲区（用于写文件）
-- `state_03` = write base（输出缓冲区 + 0x400，即 `.text` 起始）
-- `state_0E` = code offset（下一个字节写在哪）
-
-## 5. 你的第一个程序
-
-写一个把 `"Hi\n"` 写到 `out.txt` 的程序。
-
-等等——**yoyo 在 Phase 1 没有字符串支持**。字符串是 Phase 2 特性（opcode `12`）。
-所以你没法轻松打印文本。
-
-最简单的有意义的程序就是**返回 0**：
+**Handler** 是 yoyo 的基本代码单元——一段以 `40 hh` 开头、`FF` 结束的指令序列。
+`hh` 是 8 位编号（0–255），可看作函数名。
 
 ```
-; a.ty — 空程序，以 0 退出
-FF
+40 30                  ; H_30: 入口
+30 50 42               ; state_50 = 0x42
+60 0A 50               ; state_0A = state_50
+FF                     ; 返回
 ```
 
-就这样。`FF` 是 RET。前面没有 handler，程序立即返回。ExitProcess 在最后被调用。
+调用 handler 用 `41 hh`（CALL），跳过去用 `70 hh`（JMP），从 handler 返回用 `FF`（RET）。
+这三种跳转都是相对偏移——handler 可以在文件里随意排序，编译器在发射阶段会算出
+正确的相对地址。
 
-稍微有趣一点的程序——往文件写一个字节——需要 Phase 2 opcode。目前 yoyo 的
-正经用途是写编译器，就像 `mini-kyc.ty` 那样。
+**前向引用是允许的**：在 `40 30` 之前写 `41 30`，编译器会记录 fixup，等 `40 30` 发射后
+再回填偏移。
 
-## 6. mini-kyc.ty 的模式
+### 4.3 启动约定
 
-`mini-tyc.ty` 用一种特定的模式：handler `01` 是主扫描循环，状态机驱动分派，
-handler `63-65` 是 fixup 解析器。研究它是学 yoyo 惯用法最快的方式。
+一个 yoyo 程序是若干 handler 的集合。入口约定由调用者决定——通常主机编译器会
+调用 `H_01`（`41 01`）。
 
-### 6.1 启动块
-
-每个 yoyo 程序都以一些设置开始。这是 `mini-tyc.ty` 顶层代码的简化版：
+`yoyo.ty` 的入口是 `H_01`（主扫描循环）。前 10 行长这样：
 
 ```
-; 分配输出缓冲区
-20 02 00040000   ; （仅 Phase 2 —— Phase 1 硬编码大小）
-
-; 状态初始化
-30 0e 00         ; code_offset = 0
-
-; 跑主扫描循环
 41 01            ; 调用 H_01（主扫描）
+FF               ; 主流程返回
+```
 
-; 写输出
-51 02 01 0E      ; （仅 Phase 2）
+---
 
-; 退出
+## 5. Opcode 参考
+
+Phase 1 共 9 个 opcode：
+
+| Opcode | 参数              | 含义                                    |
+|--------|-------------------|-----------------------------------------|
+| `30`   | `slot, val`       | SET：`state[slot] = val`                |
+| `60`   | `dst, src`        | GET：`state[dst] = state[src]`          |
+| `65`   | `a, b`            | CMP：比较 `state[a]` 和 `state[b]`      |
+| `66`   | `slot`            | INC：`state[slot]++`                    |
+| `70`   | `hh`              | JMP：跳到 handler `hh`                  |
+| `71`   | `hh`              | JE：`state[a] == state[b]` 时跳         |
+| `40`   | `hh`              | HANDLER：声明 handler `hh`              |
+| `41`   | `hh`              | CALL：调用 handler `hh`                 |
+| `FF`   | —                 | RET：从当前 handler 返回                |
+
+> `71` 的两个 state 槽（`a` 和 `b`）由最近的 `65` 指令决定——`CMP` 设置标志位，
+> `JE` 读标志位。中间可以插入任意不修改标志位的指令。
+
+### 5.1 编码体积参考
+
+每条 yoyo 指令被翻译成 1–193 字节的 x86_64 机器码：
+
+| 指令       | x64 体积      | 用途                   |
+|------------|---------------|------------------------|
+| `FF`       | 1 B           | RET                    |
+| `71`–`7A`  | 6 B           | 条件跳转               |
+| `70`       | 5 B           | 无条件跳转             |
+| `41`       | 5 B           | CALL                   |
+| `30`       | 13–17 B       | SET（含 `movabs`）     |
+| `60`       | 6–14 B        | GET                    |
+| `65`       | 9–17 B        | CMP                    |
+| `66`       | 12–18 B       | INC                    |
+
+---
+
+## 6. 编程模式
+
+### 6.1 局部变量
+
+没有栈。用一个或几个 state 槽当局部变量：
+
+```
+30 50 42               ; state_50 = 0x42   （局部变量初始化）
+65 50 51               ; cmp state_50, state_51
+71 60                  ; 如果相等就跳走
+66 50                  ; state_50++
+```
+
+### 6.2 循环
+
+用 `INC` + `CMP` + `JE` 写显式循环。下面把 `state_00` 从 0 加到 9：
+
+```
+40 23                  ; H_23: 初始化
+30 50 00               ; state_50 = 0
+30 51 0A               ; state_51 = 10
+FF
+
+40 24                  ; H_24: 循环体
+66 50                  ; state_50++
+65 50 51               ; cmp state_50, state_51
+71 25                  ; je H_25（到 10 就退出）
+70 24                  ; 否则继续
+FF
+
+40 25                  ; H_25: 结束
 FF
 ```
 
-### 6.2 计数器循环
+### 6.3 函数调用（带返回值）
 
-下面这个程序把 `state_00` 一直加到等于 10：
+没有 caller-saved / callee-saved 约定。约定一个 state 槽做返回值即可：
 
 ```
-40 23              ; H_23: 计数器循环入口
-30 50 00           ; state_50 = 0
-30 51 0A           ; state_51 = 10
-40 24
-30 00 00           ; state_00 = 0
+40 30                  ; H_30: 被调函数
+60 0A 50               ; state_0A = state_50   （返回值放 state_0A）
 FF
 
-40 25              ; H_25: 加并检查
-66 00              ; state_00++
-65 00 51           ; cmp state_00, state_51
-71 26              ; je H_26（完成）
-70 25              ; jmp H_25（循环）
-FF
-
-40 26              ; H_26: 完成
+40 31                  ; H_31: 调用方
+41 30                  ; 调用 H_30
+; 此时 state_0A 是返回值
 FF
 ```
 
-注意：它在循环，但没产生任何输出。要看到它，需要调试工具。yoyo 没有内建 print。
+### 6.4 前向引用
 
-## 7. 主机编译器的工作方式
+`41 hh` 可以出现在 `40 hh` 之前。编译器记录 fixup，发射到 `40 hh` 时回填。
 
-yoyo 编译器（`mini-kyc.exe` 和它的兄弟 `ky-compiler.js`）是两次扫描的编译器：
+```
+41 30                  ; 前向调用 H_30
+FF
 
-**第一遍：扫描。** 读 `.ty` 文件，tokenize 成 opcodes + 参数，建立所有指令的列表。
+40 30                  ; H_30 在下面定义
+30 50 00
+FF
+```
+
+---
+
+## 7. 编译器工作原理
+
+yoyo 编译器是**两遍扫描**的简单汇编器：
+
+**第一遍：词法分析。** 读 `.ty`，按行 tokenize 成 `(opcode, args[])` 列表。
 
 **第二遍：发射。** 遍历指令列表。对每个 opcode，调用对应的 emitter handler
-（比如 `H_33` 处理 SET，`H_43` 处理前向 CALL）。每个 handler 把 x86_64 机器码发射到
-代码缓冲区。
+（`H_33` 处理 SET、`H_43` 处理 CALL 等）。每个 handler 把 x86_64 机器码
+emit 到代码缓冲区。
 
-**前向引用：** 当一个 CALL 指向还没发射的 handler 时，emitter 记录
-`{target_handler, position_of_disp32}` 到 fixup 数组。扫描完成后，fixup 解析器
-遍历这个数组，把每个 `disp32` 补上正确的相对偏移。
+**前向引用的 fixup：** 当 emitter 遇到一个目标 handler 还没发射的 `41 hh` 时，
+它先在缓冲区写一条占位 `CALL rel32`（`rel32 = 0`），同时把
+`(hh, position_of_disp32)` 记入 fixup 列表。全部发射完成后，fixup 解析器
+遍历这张表，把每个 `disp32` 改成正确的相对偏移。
 
-输出是一个 PE32+ 可执行文件，通过 IAT 用 8 个 Windows API 函数：
+**输出：** PE32+ 可执行文件，通过 IAT 调用 8 个 Windows API：
 `ExitProcess`、`GetStdHandle`、`WriteFile`、`ReadFile`、`CreateFileA`、
-`GetFileSize`、`CloseHandle`、`VirtualAlloc`。
+`GetFileSize`、`CloseHandle`、`VirtualAlloc`。没有 CRT、没有依赖。
 
-## 8. 工具
+这种结构极小、极透明——整个编译器 2000 行 `.ty`，全部 9 个 opcode 自己实现，
+连 fixup 解析器都是 yoyo 代码。
 
-- **编译 `.ty` 到 `.exe**：`node ky-compiler.js input.ty output.exe`
-- **运行编译好的程序**：直接执行 `.exe`（比如 `output.exe`）
-- **调试运行中的程序**：用 `debug.js`（Windows Debug API via koffi）
+---
 
-## 9. 常用模式
+## 8. 工具链
 
-### 9.1 局部变量
+| 工具                       | 作用                                              |
+|----------------------------|---------------------------------------------------|
+| `src/yoyo-gen.js`          | 由 JS 生成 `projects/yoyo.ty` 源码                 |
+| `src/yoyo.js`              | 把 `.ty` 编译成 `.exe`（Node.js 主机实现）         |
+| `build/yoyo.exe`           | 同上，自托管版本（行为完全一致）                   |
+| `src/encode-x64.js`        | x86_64 指令编码库（被 `src/yoyo.js` 使用）        |
+| `src/pe-builder.js`        | PE 文件构建器（被 `src/yoyo.js` 使用）            |
+| `tools/debug.js`           | Windows Debug API 调试器（基于 koffi）            |
+| `scripts/bootstrap-check.*`| 一致性 + 基线门禁                                 |
 
-yoyo 没有栈。用一个 state 槽：
+常用命令：
 
-```
-30 50 42        ; state_50 = 0x42   ; 局部变量初始化
-65 50 51        ; cmp state_50, state_51
-71 ...          ; 用它
-```
+```bash
+# 完整 bootstrap 验证
+make bootstrap-check
 
-### 9.2 函数调用（带返回值）
+# 严格模式 + 基线对比（CI 用）
+make bootstrap-lock
 
-没有 caller-saved/callee-saved 约定。约定哪个 state 槽放返回值就行：
-
-```
-40 30
-60 0A 50        ; state_0A = state_50  ; 返回值放 state_0A
-FF
-
-40 31
-41 30          ; 调用 H_30
-; state_0A 现在是返回值
-FF
+# 调试编译产物的崩溃
+node tools/debug.js output.exe
 ```
 
-### 9.3 加载常量
+---
 
-唯一的"加载常量" opcode 是 `30`（SET 64-bit）。实际加载由运行时的
-`movabs rax, imm64` 指令完成。
+## 9. 限制与路线图
 
-## 10. 常见陷阱
+### 9.1 Phase 1 不支持的特性
 
-1. **前向引用**没问题，编译器用 fixup 处理。
-2. **Handler 编号 0 是特殊的**——它经常是入口或空操作。
-3. **状态数组是 0 索引的**。`state_0` 是第一个槽。
-4. **没有字符串、浮点、结构体**——就是 64 位整数的扁平数组。
-5. **指令行内不能有注释**——注释必须以 `;` 开头。
+| 特性                | 状态                       |
+|---------------------|----------------------------|
+| 字符串              | Phase 2（opcode `12`）     |
+| 文件 I/O            | Phase 2（opcode `50`/`51`）|
+| 位运算              | Phase 2                    |
+| 其他条件跳转        | Phase 2（`72`-`7A`）       |
+| 浮点                | 不计划                     |
+| 结构体 / 对象       | 不适用                     |
+| 闭包 / lambda       | 不适用                     |
 
-## 11. Phase 1 没有的
+### 9.2 路线图
 
-下面这些是常见语言特性，yoyo Phase 1 没有：
+- **Phase 2**：补齐剩余 ~25 个 opcode，重点是字符串、文件 I/O、位操作
+- **Phase 3**：让 `yoyo.exe` 编译 `yoyo.exe` 的输出与自身 SHA256 相同（三阶段自举）
+- **Phase 4**：从 Node.js 完全退役，只用 yoyo 工具链
 
-| 特性 | 状态 |
-|------|------|
-| 字符串（`12` opcode） | Phase 2 |
-| 文件 I/O（`50`/`51` opcode） | Phase 2 |
-| 计数循环（`68`/`69`/等） | Phase 2 |
-| 其他条件跳转（`72-7A`） | Phase 2（部分实现，但被门控） |
-| 位操作 | Phase 2 |
-| 浮点 | 不计划（PE 用 int64 state） |
-| 结构体 / 对象 | 不适用（扁平状态数组） |
-| 递归函数 | 可以，但调用深度受栈限制 |
-| 闭包 / lambda | 不适用 |
+---
 
-## 12. 下一步
+## 10. 进一步阅读
 
-- **读 `projects/mini-tyc.ty`**——一个真实的、能跑的 yoyo 程序（编译器自己）。
-  这是最好的参考。
-- **读 `spec.md`**——技术参考。§0、§5、§6 对学习最有用。
-- **读 `encode-x64.js`**——yoyo 编译器怎么发射 x86_64 机器码。
-- **改编译器的代码**——试试在 `encode-x64.js` 里改一个 opcode 的编码，看
-  会发生什么。
+- **`projects/yoyo.ty`** — 2000 行的真实 yoyo 程序。读它就是最快的入门。
+- **`docs/spec.md`** — 技术参考。§0（动机）、§5（opcode 编码）、§6（fixup）值得细读。
+- **`src/encode-x64.js`** — 看 yoyo 怎么把每条 opcode 翻译成 x86_64 机器码。
+- **`src/pe-builder.js`** — 134 行实现 PE32+ 头。
+- **`docs/FLASH-V4-REVIEW.md`** — 一段历史：fixup 解析器从崩溃到修通的全过程。
 
-欢迎来到 yoyo。慢慢来，多读别人的代码，改动后**永远跑 bootstrap gate**
-（`make bootstrap-lock`）。
+修改任何编译器源码后，**永远跑 `make bootstrap-lock`**——这是最后一道保险。
+
+---
+
+*手册版本 1.0 · 对应 yoyo Phase 1（9 个 opcode）*
