@@ -87,7 +87,7 @@ const STR  = s         => '12 s' + Buffer.from(s + '\0', 'ascii').toString('hex'
 // KY SOURCE GENERATION
 // ════════════════════════════════════════════════════════════════════════════════
 
-C('mini-kyc.ky - Self-hosting KY compiler (Phase 1)');
+C('mini-kyc.ky - Self-hosting yoyo compiler (Phase 1)');
 C('Compiles .ky source -> Windows x64 PE executable');
 C('Phase 1: handles opcodes 40 FF 30 60 65 66 70 71 41');
 B();

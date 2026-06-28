@@ -1,4 +1,4 @@
-// Generator for mini-kyc.ky — a self-hosting ky compiler written in ky
+// Generator for mini-kyc.ky — a self-hosting yoyo compiler written in yoyo
 const fs=require('fs');
 const E=require('./encode-x64.js');
 const PE=require('./pe-builder.js').PE;
@@ -136,7 +136,7 @@ function blank(){lines.push('');}
 function hexBlob(bytes){return 's'+bytes.toString('hex');}
 
 // Header
-comment('mini-kyc.ky — Self-hosting ky compiler');
+comment('mini-kyc.ky — Self-hosting yoyo compiler');
 comment('Compiles input.ky → output.exe');
 blank();
 

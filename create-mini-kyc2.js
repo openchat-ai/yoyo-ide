@@ -115,8 +115,8 @@ for (const k of Object.keys(codegen)) {
   }
 }
 
-// Now generate the ky COMPILER source
-// mini-kyc.ky: a self-hosting compiler written in ky
+// Now generate the yoyo compiler source
+// mini-kyc.ky: a self-hosting compiler written in yoyo
 
 const SCANNER_STATES = {
   LOOKING_FOR_OP: 0,
@@ -138,7 +138,7 @@ function L(s) { outLines.push(s); }
 function C(s) { outLines.push('; ' + s); }
 function B() { outLines.push(''); }
 
-C('mini-kyc.ky - Self-hosting ky compiler');
+C('mini-kyc.ky - Self-hosting yoyo compiler');
 C('Compiles input.ky -> output.exe');
 B();
 C('String definitions');

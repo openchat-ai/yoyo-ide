@@ -356,7 +356,7 @@ At EOF (when `read_ptr >= end_ptr`), the scanner JAE to `H_62`. `H_62`:
 
 **Current bug (must fix for Stage 2)**: The `H_62` label is overloaded — `JAE(0x62)`
 in the scanner jumps there at EOF, AND `opcode 0x51` (WriteFile) also dispatches to
-`H_62` as its emitter. The ky-compiler's analyze step overwrites the first H_62 with
+`H_62` as its emitter. The yoyo compiler's analyze step overwrites the first H_62 with
 the second. See `FLASH-V4-REVIEW.md` §B.2 for the proposed fix (rename EOF handler
 to `H_1E`).
 
@@ -396,7 +396,7 @@ const CH = (h) => '41 ' + hx(h, 2);
    opcode to handler. EOF handler at `H_62` (rename to `H_1E` is the proposed fix).
 
 3. **Handlers (lines 600-853)** — one section per handler. Each handler is a sequence
-   of `L()` calls that emit KY instructions, which ky-compiler.js compiles into x86_64.
+   of `L()` calls that emit yoyo instructions, which `ky-compiler.js` compiles into x86_64.
 
 **Adding a new opcode emitter** (Phase 2+):
 

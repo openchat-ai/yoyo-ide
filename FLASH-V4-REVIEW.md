@@ -165,7 +165,7 @@ dispatch entries H_4D-H_5C
 
 ### D.1 `FORMAT.md` 删除
 
-这是 textdb 的 TSV schema 文档，跟 ky 编译器毫无关系。
+这是 textdb 的 TSV schema 文档，跟 yoyo compiler 毫无关系。
 
 不知道为什么 staging 进去了——大概是 stash 时 `git add -A` 把无关文件捞进来了。
 
