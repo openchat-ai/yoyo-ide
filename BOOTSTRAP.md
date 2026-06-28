@@ -3,7 +3,7 @@
 This project currently uses a deterministic pre-bootstrap gate before true stage execution self-hosting.
 
 > See `LANGUAGE.md` for naming conventions: the language is **yoyo**, source files are
-> `.ky` (legacy) / `.ty` (future), the compiler tool is **ky compiler** / `kyc`.
+> `.ky` (legacy) / `.ty` (future), the compiler is the **yoyo compiler** / `yoyoc`.
 
 ## Commands
 
@@ -78,18 +78,18 @@ create-mini-kyc3.js  ──生成──▶  mini-kyc.ky  ──编译──▶  
        │                                │
        └──────────  ── ── ── ── ── ── ── ┘
                           │
-                   ky-compiler.js
+                   ky-compiler.js  (yoyoc, JS 主机)
                           │
-                (JS 参考编译器，第一阶段)
+                (JS 参考实现，第一阶段)
 ```
 
 **三个角色：**
 
 1. **`create-mini-kyc3.js`** — Node.js 生成器。用 JS 写出 `mini-kyc.ky`（包括所有 H_30 emitter handlers 的 ky 代码）。改 emitter 逻辑后跑一次 `node create-mini-kyc3.js` 重新生成。
 
-2. **`ky-compiler.js`** — JavaScript 写的参考编译器，把 `.ky` 编译成 `.exe`。bootstrap 第一阶段；是唯一能编译出 `mini-kyc.exe` 的工具。自举完成后理论上可扔掉。
+2. **`ky-compiler.js`** — JavaScript 写的 yoyoc 主机端，把 `.ky` 编译成 `.exe`。bootstrap 第一阶段；是唯一能编译出 `mini-kyc.exe` 的工具。自举完成后理论上可扔掉。
 
-3. **`mini-kyc.exe`** — 自托管编译器。一旦存在，它就能自己编译 `mini-kyc.ky`（第二、三、N 阶段），不再需要 `ky-compiler.js`。
+3. **`mini-kyc.exe`** — 自托管 yoyoc。一旦存在，它就能自己编译 `mini-kyc.ky`（第二、三、N 阶段），不再需要 `ky-compiler.js`。
 
 **Bootstrap 链：**
 

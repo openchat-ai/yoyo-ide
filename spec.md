@@ -8,7 +8,7 @@ runs without any runtime dependencies — no DLL, no CRT, no Node, no Python. Th
 compiler itself is written in yoyo and can compile its own source.
 
 See `LANGUAGE.md` for naming conventions (yoyo language, `.ty` source, `.tyo` object,
-ky compiler).
+yoyo compiler).
 
 The project is bootstrapped in three stages. This document describes the architecture,
 invariants, and development workflow so future contributors (human or AI) can make
