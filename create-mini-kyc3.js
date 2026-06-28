@@ -541,6 +541,7 @@ C('H_1E: emit auto-ret for the last handler, then resolve fixups');
 L(H(0x1E));
 L(SET(0x45, 0xC3));
 L(CH(0xE0) + '  ; emit 0xC3 (RET) as auto-ret for last handler');
+L(SET(0x45, 0xCC)); L(CH(0xE0) + '  ; SENTINEL INT3 before fixup');
 L(CH(0x63) + '  ; resolve all forward-jump fixups');
 L(RET() + '      ; return to main ops -> 51 write, then ExitProcess');
 B();
@@ -839,10 +840,10 @@ L(CH(0xE5));
 L(RET());
 B();
 
-C('H_42: forward JMP - emit E9 placeholder and record fixup');
+C('H_42: forward JMP - emit E9, record fixup (rel32 pos), then placeholder');
 L(H(0x42));
-L(SET(0x45, 0xE9)); L(CH(0xE0));   // emit E9
-L(CH(0xE6) + '  ; record fixup (hh=state_50, patch_pos=state_0E)');
+L(SET(0x45, 0xE9)); L(CH(0xE0));   // emit E9 (1B)
+L(CH(0xE6) + '  ; record fixup: pos=state_0E (after E9 = rel32 field position)');
 L(SET(0x45, 0));                    // emit 4 zero bytes placeholder
 L('57 03 0E 45'); L(INC(0x0E));
 L('57 03 0E 45'); L(INC(0x0E));
@@ -863,10 +864,10 @@ L(CH(0xE5));
 L(RET());
 B();
 
-C('H_43: forward CALL - emit E8 placeholder and record fixup');
+C('H_43: forward CALL - emit E8, record fixup (rel32 pos), then placeholder');
 L(H(0x43));
-L(SET(0x45, 0xE8)); L(CH(0xE0));
-L(CH(0xE6));
+L(SET(0x45, 0xE8)); L(CH(0xE0));   // emit E8 (1B)
+L(CH(0xE6) + '  ; record fixup: pos=state_0E (after E8 = rel32 field position)');
 L(SET(0x45, 0));
 L('57 03 0E 45'); L(INC(0x0E));
 L('57 03 0E 45'); L(INC(0x0E));
@@ -1023,7 +1024,11 @@ B();
 // Encoding: stGet(RDX,ss); 0F B6 02; stPut(dd,RAX) = 7+4+7 = 18 bytes
 C('H_76: opcode 0x80 dd ss - emit: stGet(RDX,ss); movzx rax,byte [rdx]; stPut(dd,RAX)');
 L(H(0x76));
-L(GET(0x46, 0x51)); L(CH(0xEB));   // stGet(RDX, ss) = src addr
+L(GET(0x46, 0x51)); L(CH(0xEB));   // stGet(RDX, ss) = base addr
+L(GET(0x46, 0x52)); L(CH(0xE8));   // stGet(R8, oo) = offset
+L(SET(0x45, 0x4C)); L(CH(0xE0));   // add rdx, r8: 4C 01 C2
+L(SET(0x45, 0x01)); L(CH(0xE0));
+L(SET(0x45, 0xC2)); L(CH(0xE0));
 L(SET(0x45, 0x0F)); L(CH(0xE0));   // movzx rax, byte [rdx]: 0F B6 02
 L(SET(0x45, 0xB6)); L(CH(0xE0));
 L(SET(0x45, 0x02)); L(CH(0xE0));
@@ -1511,6 +1516,9 @@ L(H(0x64));
 C('Exit when i >= fixup_count');
 L(CMP(0x47, 0x07));
 L(JAE(0x65) + '  ; i >= count -> done');
+
+
+
 C('Compute byte offset into fixup arrays: offset = i * 4');
 L(GET(0x48, 0x47));
 L(ADDV(0x48, 0x48)); L(ADDV(0x48, 0x48) + ' ; state_48 = i*4');
@@ -1539,10 +1547,21 @@ C('rel32 = target - (patch_pos + 4)');
 L(GET(0x4E, 0x4A));
 L(ADD(0x4E, 4) + '  ; state_4E = patch_pos + 4');
 L(SUBV(0x4D, 0x4E) + '  ; state_4D = rel32');
-C('Write rel32 to write_base + patch_pos');
-L(GET(0x4C, 0x03));
-L(ADDV(0x4C, 0x4A) + '  ; state_4C = write_base + patch_pos');
-L('55 4C 4D' + '         ; [state_4C] = (u32) rel32');
+C('Write rel32 as 4 bytes at write_base + patch_pos using H_75');
+C('Byte 0: low byte of rel32 (state_4D)');
+L(GET(0x51, 0x4D) + '    ; state_51 = rel32');
+L(CH(0xED) + '            ; byte0 -> state_4F, quotient -> state_47');
+L('57 4C 4A 4F' + '      ; [write_base + patch_pos + 0] = byte0');
+C('Byte 1: next byte (state_47 = quotient)');
+L(GET(0x4F, 0x47));
+L(SET(0x42, 0x100)); L(CH(0xEE) + ' ; byte1 -> state_4F');
+L(INC(0x4A) + '          ; patch_pos + 1');
+L('57 4C 4A 4F' + '      ; [write_base + patch_pos + 1] = byte1');
+C('Zero bytes at +2, +3');
+L(INC(0x4A) + '          ; patch_pos + 2');
+L(SET(0x4F, 0)); L('57 4C 4A 4F');
+L(INC(0x4A) + '          ; patch_pos + 3');
+L(SET(0x4F, 0)); L('57 4C 4A 4F');
 C('i++, loop');
 L(INC(0x47));
 L(JMP(0x64));

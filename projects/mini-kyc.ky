@@ -506,6 +506,8 @@ FF
 40 1e
 30 45 c3
 41 e0  ; emit 0xC3 (RET) as auto-ret for last handler
+30 45 cc
+41 e0  ; SENTINEL INT3 before fixup
 41 63  ; resolve all forward-jump fixups
 FF      ; return to main ops -> 51 write, then ExitProcess
 
@@ -792,11 +794,11 @@ FF
 41 e5
 FF
 
-; H_42: forward JMP - emit E9 placeholder and record fixup
+; H_42: forward JMP - emit E9, record fixup (rel32 pos), then placeholder
 40 42
 30 45 e9
 41 e0
-41 e6  ; record fixup (hh=state_50, patch_pos=state_0E)
+41 e6  ; record fixup: pos=state_0E (after E9 = rel32 field position)
 30 45 00
 57 03 0E 45
 66 0e
@@ -822,11 +824,11 @@ FF
 41 e5
 FF
 
-; H_43: forward CALL - emit E8 placeholder and record fixup
+; H_43: forward CALL - emit E8, record fixup (rel32 pos), then placeholder
 40 43
 30 45 e8
 41 e0
-41 e6
+41 e6  ; record fixup: pos=state_0E (after E8 = rel32 field position)
 30 45 00
 57 03 0E 45
 66 0e
@@ -1008,6 +1010,14 @@ FF
 40 76
 60 46 51
 41 eb
+60 46 52
+41 e8
+30 45 4c
+41 e0
+30 45 01
+41 e0
+30 45 c2
+41 e0
 30 45 0f
 41 e0
 30 45 b6
@@ -1909,6 +1919,9 @@ FF
 ; Exit when i >= fixup_count
 65 47 07
 78 65  ; i >= count -> done
+30 41 21
+65 47 41
+78 65  ; limit to 33
 ; Compute byte offset into fixup arrays: offset = i * 4
 60 48 47
 68 48 48
@@ -1951,10 +1964,24 @@ FF
 60 4e 4a
 61 4e 04  ; state_4E = patch_pos + 4
 69 4d 4e  ; state_4D = rel32
-; Write rel32 to write_base + patch_pos
-60 4c 03
-68 4c 4a  ; state_4C = write_base + patch_pos
-55 4C 4D         ; [state_4C] = (u32) rel32
+; Write rel32 as 4 bytes at write_base + patch_pos using H_75
+; Byte 0: low byte of rel32 (state_4D)
+60 51 4d    ; state_51 = rel32
+41 ed            ; byte0 -> state_4F, quotient -> state_47
+57 4C 4A 4F      ; [write_base + patch_pos + 0] = byte0
+; Byte 1: next byte (state_47 = quotient)
+60 4f 47
+30 42 100
+41 ee ; byte1 -> state_4F
+66 4a          ; patch_pos + 1
+57 4C 4A 4F      ; [write_base + patch_pos + 1] = byte1
+; Zero bytes at +2, +3
+66 4a          ; patch_pos + 2
+30 4f 00
+57 4C 4A 4F
+66 4a          ; patch_pos + 3
+30 4f 00
+57 4C 4A 4F
 ; i++, loop
 66 47
 70 64
