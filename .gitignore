@@ -3,6 +3,7 @@
 !bootstrap-baseline.txt
 bootstrap-report.txt
 bootstrap-report-diff.txt
+scripts/node-err.txt
 *.bin
 *.hex
 *.bak

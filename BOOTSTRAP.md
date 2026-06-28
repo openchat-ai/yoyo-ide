@@ -4,28 +4,28 @@ This project currently uses a deterministic pre-bootstrap gate before true stage
 
 ## Commands
 
-1. Quick check
+1. Quick check (PowerShell on Windows; bash equivalent on WSL)
 
 ```bash
-bash scripts/bootstrap-check.sh
+powershell -ExecutionPolicy Bypass -File scripts/bootstrap-check.ps1
 ```
 
 2. Strict report
 
 ```bash
-bash scripts/bootstrap-check.sh --strict
+powershell -ExecutionPolicy Bypass -File scripts/bootstrap-check.ps1 --strict
 ```
 
 3. Update fixed baseline (only when current state is intentionally accepted)
 
 ```bash
-bash scripts/bootstrap-check.sh --strict --update-baseline
+powershell -ExecutionPolicy Bypass -File scripts/bootstrap-check.ps1 --strict --update-baseline
 ```
 
 4. Lock mode (CI-style regression gate)
 
 ```bash
-bash scripts/bootstrap-check.sh --strict --lock
+powershell -ExecutionPolicy Bypass -File scripts/bootstrap-check.ps1 --strict --lock
 ```
 
 ## Make Targets

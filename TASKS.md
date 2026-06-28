@@ -62,22 +62,29 @@ mini-kyc.exe.sha256: 938e7940cf5521c8922e1928cda67854f62e12e0d090e3dae0eb2f34bb3
 
 ## 当前卡点（2026-06-29）
 
-### Stage 2 自举 hangs
-- **启动段正常** ✅ — 通过 INT3 在 RVA 0x1000（入口）和 0x1044（启动段结束）验证
-- **LoadFile 开始执行** ✅ — RVA 0x1080 断点确认 CreateFileA 参数正确
-- **Access Violation 在 RVA 0x10fd** ❌ — RIP 在 ReadFile 附近，RDX=0 但 state[0x0A]=0xd40000
+### ✅ 已解决
 
-### 根因推测
-stGet(RDX， 0x0A) 应该从 R15+0x0A*8=0xc20050 读取 state[0x0A]=0xd40000，但 crash 时 RDX=0。
-可能原因：
-1. **ky-compiler.js 的 opcode 0x50 发射器**在`stPut(0x0A, RAX)`到`stGet(RDX, 0x0A)`之间有指令覆盖了 RDX
-2. **寄存器冲突** — emit 代码中某个 `mov_ri`/`xor_rr` 无意中写入了 RDX
-3. **state slot 写入后又被后续 opcode 覆盖**（但 crash 在同一 opcode 内部）
+三阶段自举完整跑通，0 diff。修了三个 bug：
+
+1. **H_76 (LDB emitter)**：把 `state_52` 当 state slot 读而非 literal offset，fixup resolver 读到垃圾地址
+2. **TEXT_VS 0x4000 不够**：发射代码溢出 .text 段
+3. **WriteFile 截断**：只写 `state_0E` 字节，.rdata 段没写全。WriteFile 前 SET `state_0E = peBytes.length`
+
+### 验证
+
+```
+[1] node create-mini-kyc3.js        → projects/mini-kyc.ky
+[2] node ky-compiler.js mini-kyc.ky → mini-kyc.exe           (gen 1, 87040B)
+[3] mini-kyc.exe                    → output.exe (stage2)    (gen 2, 51200B)
+[4] output.exe (gen 2)              → output.exe (stage3)    (gen 3, 51200B)
+[5] output.exe (gen 3)              → output.exe (stage4)    (gen 4, 51200B)
+```
+
+gen 2/3/4 三者 byte-for-byte 完全一致（0 diff / 51200 bytes）。
 
 ## 待办
 
-- [ ] Stage 2 self-hosting 验证：修复 RVA 0x10fd AV（RDX 被清零问题）
-- [ ] 修复后重新跑 test-stage2.ps1 确认产出 output.exe
-- [ ] 更新 bootstrap-baseline.txt 为新 SHA256
+- [ ] 更新 bootstrap-baseline.txt 为新 SHA256（自举 0 diff 后）
 - [ ] Stage 1 lock gate 在 CI 跑通
-- [ ] Stage 3: 三阶段自举收敛
+- [ ] Phase 2: 加剩余 opcode emitter（61 62 65 68 69 70-7A 80 84 20 50 51）
+- [ ] emitter 一致性测试基础设施（避免再出现 H_76 那种"reference vs self" mismatches）
