@@ -7,7 +7,7 @@ const { PE } = require('./pe-builder.js');
 // ─── Fixed layout constants ───────────────────────────────────────────────────
 const FUNCS      = ['ExitProcess','GetStdHandle','WriteFile','ReadFile',
                     'CreateFileA','GetFileSize','CloseHandle','VirtualAlloc'];
-const TEXT_VS    = 0x4000;   // .text virtual size (must match ky-compiler.js)
+const TEXT_VS    = 0x8000;   // .text virtual size (must fit emitted code)
 const CODE_RVA   = 0x1000;   // .text base RVA
 const IAT_BASE   = 0x5000;   // IAT base (= CODE_RVA + TEXT_VS)
 
@@ -15,7 +15,7 @@ const IAT_BASE   = 0x5000;   // IAT base (= CODE_RVA + TEXT_VS)
 const IAT = {};
 FUNCS.forEach((f, i) => { IAT[f] = IAT_BASE + i * 8; });
 
-// ─── Build embedded PE template (0x8800 bytes) ───────────────────────────────
+// ─── Build embedded PE template (size varies with TEXT_VS) ────────────────────
 // This is what mini-kyc.exe copies into the output buffer when compiling a program.
 const tplPE = new PE();
 tplPE.subsys = 3;
@@ -25,7 +25,7 @@ tplPE.setData(Buffer.alloc(0x4000, 0));
 const peBytes = tplPE.build();
 const peHex   = peBytes.toString('hex');
 
-// ─── Build startup code blob (68 bytes) ──────────────────────────────────────
+// ─── Build startup code blob ──────────────────────────────────────────────
 // This is the x64 code emitted at the start of every compiled output program.
 // It calls VirtualAlloc (state array = R15) and GetStdHandle (stdout = R14).
 function buildStartup() {
@@ -39,7 +39,7 @@ function buildStartup() {
   E.mov_rr(b, 15, 0);           // mov r15, rax  (state array base)
   // Compute data section base and store in state_08
   const leaOff = b.tell();      // offset of the LEA instruction
-  E.lea_rip(b, 0, 0x5000 - (CODE_RVA + leaOff + 7)); // lea rax, [rip + disp] -> data_base
+  E.lea_rip(b, 0, IAT_BASE - (CODE_RVA + leaOff + 7)); // lea rax, [rip + disp] -> data_base
   E.mov_mr64(b, 15, 8 * 8, 0); // mov [r15 + 64], rax = state_08 = data_base
   E.mov_ri(b, 1, -11n);         // mov rcx, STD_OUTPUT_HANDLE
   const gsOff = b.tell();
@@ -48,7 +48,7 @@ function buildStartup() {
   return b.b.slice(0, b.tell()); // 82 bytes
 }
 const startupBlob = buildStartup();
-if (startupBlob.length !== 79) throw new Error('startup blob size changed: ' + startupBlob.length);
+// startupBlob length varies with IAT_BASE; use actual .length for copy
 
 // Data section offsets (in mini-kyc.exe's 64KB data section)
 const PE_BLOB_OFF      = 0x4000;  // embedded PE template
@@ -130,7 +130,7 @@ L(SET(0x14, 0)  + ' ; arg_index = 0');
 B();
 
 C('Copy embedded PE template to output buffer');
-L('84 02 ' + hx(PE_BLOB_OFF, 4) + ' 8800');
+L('84 02 ' + hx(PE_BLOB_OFF, 4) + ' ' + hx(peBytes.length, 4));
 B();
 
 C('=== H_30 emitter initialization ===');
@@ -151,14 +151,16 @@ C('Initialize emitter state: fixup_count=0, first_handler_flag=0');
 L(SET(0x07, 0)  + ' ; fixup_count = 0');
 L(SET(0x09, 0)  + ' ; first_handler_flag = 0');
 
-C('Copy startup code (68 bytes) to output .text section (at offset 0)');
+C('Copy startup code (' + startupBlob.length + ' bytes) to output .text section (at offset 0)');
 L(GET(0x4C, 0x03));
-L('84 4C ' + hx(STARTUP_BLOB_OFF, 4) + ' 4F');
-L(ADD(0x0E, 0x4F) + ' ; advance code_offset by 79 (startup size)');
+L('84 4C ' + hx(STARTUP_BLOB_OFF, 4) + ' ' + hx(startupBlob.length, 2));
+L(ADD(0x0E, startupBlob.length) + ' ; advance code_offset by ' + startupBlob.length);
 B();
 
 C('Run scanner -> emitter');
 L(CH(1)  + ' ; call H_01 main scan loop');
+C('Set total file size = PE blob size (' + hx(peBytes.length, 4) + ')');
+L(SET(0x0E, peBytes.length));
 C('Write output.exe');
 L('51 02 01 0E');  // WriteFile: state_02 buffer, "output.exe", state_0E (write pos)
 B();
@@ -725,7 +727,7 @@ B();
 
 C('H_40: first-handler prologue - emit ExitProcess(0) call (9 bytes)');
 C('  xor rcx,rcx (3B) + call [ExitProcess] (6B)');
-C('  disp = ExitProcess_IAT - (CODE_RVA + state_0E + 9) = 0x3FFC - state_0E');
+C('  disp = ExitProcess_IAT - (CODE_RVA + state_0E + 9) = ' + hx(IAT_BASE - CODE_RVA - 4, 4) + ' - state_0E');
 C('  (state_0E here = X+5 after emitting 48 31 C9 FF 15)');
 L(H(0x40));
 L(SET(0x45, 0x48)); L(CH(0xE0));   // xor rcx,rcx: 48
@@ -733,8 +735,8 @@ L(SET(0x45, 0x31)); L(CH(0xE0));   //              31
 L(SET(0x45, 0xC9)); L(CH(0xE0));   //              C9
 L(SET(0x45, 0xFF)); L(CH(0xE0));   // call [mem]: FF
 L(SET(0x45, 0x15)); L(CH(0xE0));   //             15
-C('Compute disp32 = 0x3FFC - state_0E  (ExitProcess IAT = 0x5000)');
-L(SET(0x4D, 0x3FFC));
+C('Compute disp32 = ' + hx(IAT_BASE - CODE_RVA - 4, 4) + ' - state_0E  (ExitProcess IAT = IAT_BASE)');
+L(SET(0x4D, IAT_BASE - CODE_RVA - 4));
 L(SUBV(0x4D, 0x0E));
 L(CH(0xE5) + '  ; emit disp32');
 L(SET(0x09, 1) + '  ; set first_handler_flag');
@@ -1022,16 +1024,18 @@ B();
 
 // ── H_76: opcode 0x80 dd ss - emit LDB: state[dd] = byte [state[ss]]
 // Encoding: stGet(RDX,ss); 0F B6 02; stPut(dd,RAX) = 7+4+7 = 18 bytes
-C('H_76: opcode 0x80 dd ss - emit: stGet(RDX,ss); movzx rax,byte [rdx]; stPut(dd,RAX)');
+C('H_76: opcode 0x80 dd ss oo - emit: stGet(RDX,ss); movzx rax,byte [rdx+oo]; stPut(dd,RAX)');
+C('  NOTE: oo is a LITERAL offset embedded as disp32, NOT a state slot');
 L(H(0x76));
 L(GET(0x46, 0x51)); L(CH(0xEB));   // stGet(RDX, ss) = base addr
-L(GET(0x46, 0x52)); L(CH(0xE8));   // stGet(R8, oo) = offset
-L(SET(0x45, 0x4C)); L(CH(0xE0));   // add rdx, r8: 4C 01 C2
-L(SET(0x45, 0x01)); L(CH(0xE0));
-L(SET(0x45, 0xC2)); L(CH(0xE0));
-L(SET(0x45, 0x0F)); L(CH(0xE0));   // movzx rax, byte [rdx]: 0F B6 02
-L(SET(0x45, 0xB6)); L(CH(0xE0));
-L(SET(0x45, 0x02)); L(CH(0xE0));
+L(SET(0x45, 0x0F)); L(CH(0xE0));   // 0F prefix
+L(SET(0x45, 0xB6)); L(CH(0xE0));   // B6 = movzx opcode
+L(SET(0x45, 0x82)); L(CH(0xE0));   // 82: mod=10(disp32), reg=0(EAX), r/m=2(RDX)
+C('Emit disp32 LE = literal offset from state_52');
+L(GET(0x45, 0x52)); L('57 03 0E 45'); L(INC(0x0E));  // byte0 = state_52 & 0xFF
+L(SET(0x45, 0)); L('57 03 0E 45'); L(INC(0x0E));    // byte1 = 0
+L('57 03 0E 45'); L(INC(0x0E));                      // byte2 = 0
+L('57 03 0E 45'); L(INC(0x0E));                      // byte3 = 0
 L(GET(0x46, 0x50)); L(CH(0xE3));   // stPut(dd, RAX)
 L(RET());
 B();
@@ -1505,19 +1509,17 @@ B();
 //   rel32 = target - (patch_pos + 4)
 //   write rel32 to write_base + patch_pos  (u32 LE)
 // ════════════════════════════════════════════════════════════════════════════════
-C('H_63: fixup resolver - setup loop counter');
+C('H_63: fixup resolver - setup');
 L(H(0x63));
+C('state_07 already contains fixup_count from emit phase');
 L(SET(0x47, 0) + '  ; i = 0');
 L(JMP(0x64));
 B();
 
-C('H_64: fixup resolver loop body');
+C('H_64: loop body - read fixup and write rel32');
 L(H(0x64));
-C('Exit when i >= fixup_count');
 L(CMP(0x47, 0x07));
-L(JAE(0x65) + '  ; i >= count -> done');
-
-
+L(JAE(0x65) + '  ; exit if i >= count');
 
 C('Compute byte offset into fixup arrays: offset = i * 4');
 L(GET(0x48, 0x47));
@@ -1547,27 +1549,18 @@ C('rel32 = target - (patch_pos + 4)');
 L(GET(0x4E, 0x4A));
 L(ADD(0x4E, 4) + '  ; state_4E = patch_pos + 4');
 L(SUBV(0x4D, 0x4E) + '  ; state_4D = rel32');
-C('Write rel32 as 4 bytes at write_base + patch_pos using H_75');
-C('Byte 0: low byte of rel32 (state_4D)');
-L(GET(0x51, 0x4D) + '    ; state_51 = rel32');
-L(CH(0xED) + '            ; byte0 -> state_4F, quotient -> state_47');
-L('57 4C 4A 4F' + '      ; [write_base + patch_pos + 0] = byte0');
-C('Byte 1: next byte (state_47 = quotient)');
-L(GET(0x4F, 0x47));
-L(SET(0x42, 0x100)); L(CH(0xEE) + ' ; byte1 -> state_4F');
-L(INC(0x4A) + '          ; patch_pos + 1');
-L('57 4C 4A 4F' + '      ; [write_base + patch_pos + 1] = byte1');
-C('Zero bytes at +2, +3');
-L(INC(0x4A) + '          ; patch_pos + 2');
-L(SET(0x4F, 0)); L('57 4C 4A 4F');
-L(INC(0x4A) + '          ; patch_pos + 3');
-L(SET(0x4F, 0)); L('57 4C 4A 4F');
+C('Write rel32 u32 at write_base + patch_pos');
+L(GET(0x4C, 0x03));
+L(ADDV(0x4C, 0x4A) + '  ; state_4C = write_base + patch_pos');
+L(GET(0x50, 0x4C) + '  ; state_50 = address (for H_74)');
+L(GET(0x51, 0x4D) + '  ; state_51 = value (rel32, for H_74)');
+L(CH(0x74) + '         ; emit mov [rdx], eax to write rel32');
 C('i++, loop');
 L(INC(0x47));
 L(JMP(0x64));
 B();
 
-C('H_65: fixup resolver done');
+C('H_65: done');
 L(H(0x65));
 L(RET());
 B();
