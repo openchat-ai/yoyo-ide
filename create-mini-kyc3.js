@@ -1568,7 +1568,7 @@ B();
 // ════════════════════════════════════════════════════════════════════════════════
 // Write output file
 // ════════════════════════════════════════════════════════════════════════════════
-const outPath = path.join(__dirname, 'projects', 'mini-kyc.ky');
+const outPath = path.join(__dirname, 'projects', 'mini-kyc.ty');
 const content = lines.join('\n');
 fs.writeFileSync(outPath, content);
 console.log('Written ' + outPath);

@@ -197,7 +197,7 @@ if (require.main===module){(async()=>{
   const fs=require('fs');
   const ky=fs.readFileSync(process.argv[2],'utf8');
   const exe=compile(ky);
-  const out=process.argv[3]||(process.argv[2].replace(/\.ky$/,'')+'.exe');
+  const out=process.argv[3]||(process.argv[2].replace(/\.(ty|ky)$/,'')+'.exe');
   fs.writeFileSync(out,exe);
   console.log(`Compiled to ${out} (${exe.length} bytes)`);
 })();}
