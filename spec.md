@@ -601,36 +601,56 @@ diff /tmp/ref.hex /tmp/test.hex | head -30
 
 ---
 
-## 14. Current State (as of 2026-06-27)
+## 14. Current State (as of 2026-06-28)
 
-```
-HEAD = 89b69d1  docs: review flash-v4 stash + export as patches...
-1f4fd4b  ci: restore bootstrap-gate infrastructure...
-9037f5b  Merge PR #1 (copilot/h-30)
-39ee3b3  feat: implement H_30 opcode emitter for Phase 1 self-hosting
-babb051  Checkpoint from VS Code (introduced bootstrap gate)
-```
-
-- **Stage 1 (determinism)**: DONE. Locked baseline:
-  - `mini-kyc.ky.sha256 = cd2bffec671f75f86d40e62a1c5e4cf44c4382260c02086d560cf4e6123d6969`
-  - `mini-kyc.exe.sha256 = 938e7940cf5521c8922e1928cda67854f62e12e0d090e3dae0eb2f34bb355453`
-- **Stage 2 (self-hosting)**: BROKEN. `mini-kyc.exe` crashes with `0xC0000005` after
-  WriteFile when running on inputs that have Phase 1 opcodes. Empty input works (EXIT 0).
-  Root cause is in Phase 1 emitter, possibly `H_62` overload or ExitProcess emit.
+- **Stage 1 (determinism)**: DONE.
+- **Stage 2 (self-hosting)**: DONE. `mini-kyc.exe` compiles `projects/mini-kyc.ky` and
+  produces a valid `output.exe`.
+- **Stage 3 (multi-stage convergence)**: DONE. Gen 2 / 3 / 4 byte-for-byte identical
+  (0 diff / 51200 bytes).
 - **Phase 2 (full opcodes)**: NOT STARTED. Patches exist in
   `.flash-v4-create-mini-kyc3.patch` but are unverified. Do not apply wholesale.
 
+### Bootstrap chain
+
+```
+create-mini-kyc3.js  ──生成──▶  mini-kyc.ky  ──编译──▶  mini-kyc.exe
+       ↑                                │
+  (JS 生成器)                  编译(第二阶段) │
+       │                                ▼
+       └────────────  mini-kyc.exe 自举自己
+                          │
+                   ky-compiler.js
+                          │
+                (JS 参考编译器，第一阶段)
+```
+
+```
+[1] node create-mini-kyc3.js          →  projects/mini-kyc.ky
+[2] node ky-compiler.js mini-kyc.ky   →  mini-kyc.exe           (gen 1, 87040B)
+[3] mini-kyc.exe                      →  output.exe (stage2)    (gen 2, 51200B)
+[4] output.exe (gen 2)                →  output.exe (stage3)    (gen 3, 51200B)
+[5] output.exe (gen 3)                →  output.exe (stage4)    (gen 4, 51200B)
+```
+
+gen 2/3/4 byte-for-byte 0 diff — self-hosting is genuine.
+
+### Bugs fixed in this stage
+
+1. **H_76 (LDB emitter)**: `state_52` was being treated as a state-slot index
+   instead of a literal offset. Fixup resolver read garbage addresses, hung.
+2. **TEXT_VS too small** (0x4000): emitted code overflowed `.text` section.
+   Increased to 0x8000; PE blob auto-rebuilt.
+3. **WriteFile truncated**: only wrote `state_0E` bytes, missing the `.rdata`
+   section. Now SET `state_0E = peBytes.length` before WriteFile.
+
 ### Next concrete steps (in order)
 
-1. **Fix the `H_62` overload bug** — rename EOF handler to `H_1E`, update scanner's
-   `JAE(0x62)` to `JAE(0x1E)`. Small change, isolated.
-2. **Debug the Stage 2 crash** — diff mini-kyc.exe output against `ky-compiler.js`
-   output for a tiny input. Find which emitter is wrong.
-3. **Get Stage 2 passing** — `mini-kyc.exe projects/mini-kyc.ky mini-kyc2.exe` produces
-   byte-identical output to `node ky-compiler.js projects/mini-kyc.ky mini-kyc.exe`.
-4. **Stage 3** — feed `mini-kyc2.exe` a self-compile, verify convergence.
-5. **Phase 2 first emitter** — pick opcode 0x61 (ADD imm) since it's small and
-   isolated. Run gate after each.
+1. **Update `bootstrap-baseline.txt`** to new SHA256s of `mini-kyc.ky` / `mini-kyc.exe`.
+2. **Phase 2 first emitter** — pick opcode 0x61 (ADD imm) since it's small and
+   isolated. Run `bootstrap-check.sh --strict --lock` after each.
+3. **Emitter consistency test infra** — guard against the H_76 class of bugs
+   (where self-hosted emitter silently diverges from `encode-x64.js` reference).
 
 ---
 
