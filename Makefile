@@ -1,13 +1,21 @@
 ﻿.PHONY: bootstrap-check bootstrap-strict bootstrap-lock bootstrap-update-baseline
 
+# Detect platform: prefer PowerShell on Windows, fall back to bash
+ifeq ($(OS),Windows_NT)
+  SHELL := powershell
+  RUNNER := powershell -ExecutionPolicy Bypass -File scripts/bootstrap-check.ps1
+else
+  RUNNER := bash scripts/bootstrap-check.sh
+endif
+
 bootstrap-check:
-	bash scripts/bootstrap-check.sh
+	$(RUNNER)
 
 bootstrap-strict:
-	bash scripts/bootstrap-check.sh --strict
+	$(RUNNER) --strict
 
 bootstrap-lock:
-	bash scripts/bootstrap-check.sh --strict --lock
+	$(RUNNER) --strict --lock
 
 bootstrap-update-baseline:
-	bash scripts/bootstrap-check.sh --strict --update-baseline
+	$(RUNNER) --strict --update-baseline

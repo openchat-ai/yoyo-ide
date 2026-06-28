@@ -12,22 +12,22 @@
 | **Host compiler script** | `ky-compiler.js` | Existing file; keep for now. |
 
 The reasoning: the **language** is "yoyo". The file extension mirrors C's convention
-(`.c`/`.o` ↔ `.ty`/`.tyo`). The compiler is just the "yoyo compiler" — no need
+(`.c`/`.o` �?`.ty`/`.tyo`). The compiler is just the "yoyo compiler" �?no need
 for a special tool name (like how nobody calls the C compiler "cc" except in shell
 shortcuts; it's just "the C compiler").
 
 ## Extension etymology
 
-- **`.ky`** (legacy) → **`.ty`** (target). Same letters, k→t.
-- **`.c`** → **`.o`**: source → object. Same pattern: **`.ty`** → **`.tyo`**.
+- **`.ky`** (legacy) �?**`.ty`** (target). Same letters, k→t.
+- **`.c`** �?**`.o`**: source �?object. Same pattern: **`.ty`** �?**`.tyo`**.
 - **`ty`** can also be read as **唐尧** (Táng Yáo, legendary ancient emperor)
-  or **唐悠悠** (Táng Yōuyōu) — both fitting the "yoyo" / "悠悠" theme.
+  or **唐悠�?* (Táng Yōuyōu) �?both fitting the "yoyo" / "悠悠" theme.
 
 ## File types in this repo
 
 | File | Type |
 |------|------|
-| `projects/mini-kyc.ky` | yoyo source (legacy `.ky`; **migration to `.ty` is future work**) |
+| `projects/mini-kyc.ty` | yoyo source (legacy `.ky`; **migration to `.ty` is future work**) |
 | `mini-kyc.exe` | yoyo compiler (self-hosted binary; legacy name) |
 | `output.exe` | yoyo compiler (Stage 2+ output) |
 | `ky-compiler.js` | yoyo compiler (Node.js host; legacy name) |
@@ -45,13 +45,13 @@ shortcuts; it's just "the C compiler").
 
 ## References
 
-- `spec.md` §0 — TL;DR
-- `BOOTSTRAP.md` — Component Relationships
-- `TASKS.md` — Current state
+- `spec.md` §0 �?TL;DR
+- `BOOTSTRAP.md` �?Component Relationships
+- `TASKS.md` �?Current state
 
 ## TODO
 
-- [ ] Migrate `projects/mini-kyc.ky` → `projects/mini-kyc.ty`
+- [ ] Migrate `projects/mini-kyc.ty` �?`projects/mini-kyc.ty`
 - [ ] Update `create-mini-kyc*.js` to emit `.ty` files
 - [ ] Update `ky-compiler.js` to accept `.ty` (or both `.ty` and `.ky`)
 - [ ] Decide whether to rename `ky-compiler.js` / `mini-kyc.exe` (binary compat concerns)
