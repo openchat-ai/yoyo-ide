@@ -54,13 +54,13 @@ const startupBlob = buildStartup();
 const PE_BLOB_OFF      = 0x4000;  // embedded PE template
 const STARTUP_BLOB_OFF = 0xCC00;  // startup code blob
 
-// ─── KY source line builder ───────────────────────────────────────────────────
+// ─── yoyo source line builder ───────────────────────────────────────────────────
 const lines = [];
 const L  = s => lines.push(s);
 const C  = s => lines.push('; ' + s);
 const B  = ()  => lines.push('');
 
-// KY instruction generators
+// yoyo instruction generators
 const hx = (n, w) => n.toString(16).padStart(w || 2, '0');
 const H    = n => '40 ' + hx(n);
 const CH   = n => '41 ' + hx(n);
@@ -84,7 +84,7 @@ const RET  = ()        => 'FF';
 const STR  = s         => '12 s' + Buffer.from(s + '\0', 'ascii').toString('hex');
 
 // ════════════════════════════════════════════════════════════════════════════════
-// KY SOURCE GENERATION
+// YOYO SOURCE GENERATION
 // ════════════════════════════════════════════════════════════════════════════════
 
 C('mini-kyc.ky - Self-hosting yoyo compiler (Phase 1)');

@@ -1,4 +1,4 @@
-; mini-kyc.ky - Self-hosting KY compiler (Phase 1)
+; mini-kyc.ky - Self-hosting yoyo compiler (Phase 1)
 ; Compiles .ky source -> Windows x64 PE executable
 ; Phase 1: handles opcodes 40 FF 30 60 65 66 70 71 41
 
