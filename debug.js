@@ -713,12 +713,54 @@ class Debugger {
     this.processHandle = null;
     this.mainThreadHandle = null;
     this.processId = 0;
+    this.stdinReadHandle = null;
+    this.tempExePath = null;
+    this.cleanedUp = false;
     this.pe = null;
     this.disasm = null;
     this.codeData = null; // .text section data for disassembly
     this.mode = 'crash';  // 'crash' | 'checkpoints' | 'step'
     this.stepCount = 0;
     this.lastHitRVA = 0;
+  }
+
+  cleanup() {
+    if (this.cleanedUp) return;
+    this.cleanedUp = true;
+
+    try {
+      if (this.mainThreadHandle) {
+        CloseHandle(this.mainThreadHandle);
+        this.mainThreadHandle = null;
+      }
+    } catch {}
+
+    try {
+      if (this.processHandle) {
+        DebugActiveProcessStop(this.processId);
+        CloseHandle(this.processHandle);
+        this.processHandle = null;
+      }
+    } catch {}
+
+    try {
+      if (this.stdinReadHandle) {
+        CloseHandle(this.stdinReadHandle);
+        this.stdinReadHandle = null;
+      }
+    } catch {}
+
+    if (this.tempExePath && this.tempExePath !== this.exePath && fs.existsSync(this.tempExePath)) {
+      try {
+        fs.unlinkSync(this.tempExePath);
+      } catch {}
+    }
+  }
+
+  shutdown(code = 0, message) {
+    if (message) console.log(message);
+    this.cleanup();
+    process.exit(code);
   }
 
   allocateContext() {
@@ -1052,14 +1094,15 @@ class Debugger {
       origBytes = result.origBytes;
     }
 
-    const stdinReadHandle = this.openInput(inputFile);
+    this.stdinReadHandle = this.openInput(inputFile);
+    this.tempExePath = (checkpoints.length > 0) ? tmpPath : null;
 
     // Setup STARTUPINFOW
     const siBuf = Buffer.alloc(Number(STARTUPINFOW.size));
     siBuf.writeUInt32LE(Number(STARTUPINFOW.size), 0);
     siBuf.writeUInt32LE(0x00000100, 0x48); // dwFlags STARTF_USESTDHANDLES
-    if (stdinReadHandle) {
-      siBuf.writeBigUInt64LE(BigInt(koffi.address(stdinReadHandle).toString()), 0x48);
+    if (this.stdinReadHandle) {
+      siBuf.writeBigUInt64LE(BigInt(koffi.address(this.stdinReadHandle).toString()), 0x48);
     }
     const piBuf = Buffer.alloc(Number(PROCESS_INFORMATION.size));
 
@@ -1075,7 +1118,7 @@ class Debugger {
       koffi.address(siBuf),
       koffi.address(piBuf),
     );
-    if (!ok) { console.error('[!] CreateProcessW failed'); process.exit(1); }
+    if (!ok) { this.shutdown(1, '[!] CreateProcessW failed'); }
 
     this.processHandle = piBuf.readBigUInt64LE(0);
     this.mainThreadHandle = piBuf.readBigUInt64LE(8);
@@ -1190,9 +1233,8 @@ class Debugger {
     } else {
       console.error(`\n[!] ${reason}, terminating...`);
     }
-    DebugActiveProcessStop(this.processId);
     console.log(`\n[*] Done. Hits=${this.hitCount || 0}, Crashed=false, Steps=${this.stepCount || 0}`);
-    process.exit(0);
+    this.shutdown(0);
   }
 
   debugLoop(piBuf, origBytes, maxWaitSec = 10) {
@@ -1387,9 +1429,8 @@ class Debugger {
       }
     }
 
-    // Immediate exit — avoid any risk of cleanup API hanging
     console.log(`\n[*] Done. Hits=${this.hitCount}, Crashed=${crashed}, Steps=${this.stepCount}`);
-    process.exit(0);
+    this.shutdown(0);
   }
 }
 
