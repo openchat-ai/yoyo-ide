@@ -1,6 +1,7 @@
 'use strict';
 
 const tir = require('../tir/index.js');
+const tirX64 = require('./tir-x64.js');
 
 function compileX64(src, opts) {
   const yoyo = require('../yoyo.js');
@@ -15,14 +16,23 @@ const backends = {
   },
   tir: {
     id: 'tir',
-    description: 'TIR lowering stub (vertical slice — still emits via x64)',
+    description: 'TIR lowering + x64 fallback (semantic slice)',
     compile(src, opts) {
-      const { parse, analyze } = require('../yoyo.js');
-      const mod = tir.lowerProgram(analyze(parse(src)));
+      const mod = tir.lowerProgramFromSource(src);
       if (opts && opts.verbose) {
-        console.error('[tir] lowered functions:', mod.functions.length);
+        console.error('[tir] handlers:', mod.meta.handlerCount, 'fixups:', mod.meta.fixupCount);
       }
+      const v = tir.verifyModule(mod);
+      if (!v.ok) throw new Error('TIR verify: ' + v.errors.join('; '));
       return compileX64(src, opts);
+    },
+  },
+  'tir-x64': {
+    id: 'tir-x64',
+    description: 'TIR → x64 (Phase 2 — codegen in progress)',
+    compile(src, opts) {
+      const mod = tir.lowerProgramFromSource(src);
+      return tirX64.compile(src, opts, mod);
     },
   },
 };
