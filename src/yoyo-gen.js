@@ -31,23 +31,9 @@ const IAT_BASE   = 0x5000;   // IAT base (= CODE_RVA + TEXT_VS)
 const IAT = {};
 FUNCS.forEach((f, i) => { IAT[f] = IAT_BASE + i * 8; });
 
-// ─── Build embedded PE template (size varies with TEXT_VS) ────────────────────
-// This is what yoyo.exe copies into the output buffer when compiling a program.
-const tplPE = new PE();
-tplPE.subsys = 3;
-tplPE.addImport('KERNEL32.dll', FUNCS);
-tplPE.setCode(Buffer.alloc(TEXT_VS, 0x90));
-tplPE.setData(Buffer.alloc(0x4000, 0));
-const peBytes = tplPE.build();
-const peHex   = peBytes.toString('hex');
-
-const tplELF = new ELF();
-tplELF.setCode(Buffer.alloc(TEXT_VS, 0x90));
-tplELF.setData(Buffer.alloc(0x4000, 0));
-const elfBytes = tplELF.build();
-const elfHex = elfBytes.toString('hex');
-const LINUX_CODE_RVA = BASE + 0x1000;
-const linuxOutputStartup = buildLinuxOutputStartup(LINUX_CODE_RVA + TEXT_VS);
+// Data section offsets (embedded blob layout in compiler data section)
+const TEMPLATE_BLOB_OFF = 0x4000;
+const STARTUP_BLOB_OFF  = 0xCC00;
 
 // ─── Build startup code blob ──────────────────────────────────────────────
 // This is the x64 code emitted at the start of every compiled output program.
@@ -72,11 +58,41 @@ function buildStartup() {
   return b.b.slice(0, b.tell()); // 82 bytes
 }
 const startupBlob = buildStartup();
-// startupBlob length varies with IAT_BASE; use actual .length for copy
 
-// Data section offsets (in yoyo.exe's 64KB data section)
-const TEMPLATE_BLOB_OFF = 0x4000;
-const STARTUP_BLOB_OFF  = 0xCC00;
+const LINUX_CODE_RVA = BASE + 0x1000;
+const linuxOutputStartup = buildLinuxOutputStartup(LINUX_CODE_RVA + TEXT_VS);
+const maxStartupLen = Math.max(startupBlob.length, linuxOutputStartup.length);
+const TPL_BLOB_DATA = 0x4000;
+const tplBlobELF = new ELF();
+tplBlobELF.setCode(Buffer.alloc(TEXT_VS, 0x90));
+tplBlobELF.setData(Buffer.alloc(TPL_BLOB_DATA, 0));
+const tplBlobBytes = tplBlobELF.build();
+const tplBlobHex = tplBlobBytes.toString('hex');
+
+const linuxExitBlob = isLinux ? Buffer.from([0x48, 0x31, 0xff, 0xc7, 0xc0, 0x3c, 0x00, 0x00, 0x00, 0x0f, 0x05]) : null;
+const EXIT_BLOB_OFF = 0xCD00;
+const exitBlobLen = linuxExitBlob ? linuxExitBlob.length : 0;
+
+const TPL_DATA_SIZE = ((Math.max(
+  TEMPLATE_BLOB_OFF + tplBlobBytes.length,
+  STARTUP_BLOB_OFF + maxStartupLen,
+  EXIT_BLOB_OFF + exitBlobLen
+) + 0xFFF) / 0x1000 | 0) * 0x1000;
+
+// ─── Build embedded PE/ELF compiler shells (expanded .data for bootstrap blobs) ─
+const tplPE = new PE();
+tplPE.subsys = 3;
+tplPE.addImport('KERNEL32.dll', FUNCS);
+tplPE.setCode(Buffer.alloc(TEXT_VS, 0x90));
+tplPE.setData(Buffer.alloc(TPL_DATA_SIZE, 0));
+const peBytes = tplPE.build();
+const peHex = peBytes.toString('hex');
+
+const tplELF = new ELF();
+tplELF.setCode(Buffer.alloc(TEXT_VS, 0x90));
+tplELF.setData(Buffer.alloc(TPL_DATA_SIZE, 0));
+const elfBytes = tplELF.build();
+const elfHex = elfBytes.toString('hex');
 
 // ─── yoyo source line builder ───────────────────────────────────────────────────
 const lines = [];
@@ -121,11 +137,15 @@ L(STR(isLinux ? 'output' : 'output.exe'));
 B();
 
 const tplBytes = isLinux ? elfBytes : peBytes;
-const tplHex = isLinux ? elfHex : peHex;
+const tplHex = isLinux ? tplBlobHex : peHex;
+const tplCopyLen = isLinux ? tplBlobBytes.length : peBytes.length;
+const tplWriteLen = tplBytes.length;
 const tplTextOff = isLinux ? ELF_TEXT_FILE_OFF : PE_TEXT_FILE_OFF;
 const outputStartup = isLinux ? linuxOutputStartup : startupBlob;
+const ELF_DATA_FILESZ_OFF = 0xD0;
+const ELF_DATA_MEMSZ_OFF  = 0xD8;
 
-C('Embedded template blob (' + tplBytes.length + ' = 0x' + hx(tplBytes.length, 4) + ' bytes)');
+C('Embedded template blob (' + tplCopyLen + ' = 0x' + hx(tplCopyLen, 4) + ' bytes)');
 L('13 ' + hx(TEMPLATE_BLOB_OFF, 4) + ' s' + tplHex);
 B();
 
@@ -133,8 +153,23 @@ C('Output-program startup blob (' + outputStartup.length + ' bytes)');
 L('13 ' + hx(STARTUP_BLOB_OFF, 4) + ' s' + outputStartup.toString('hex'));
 B();
 
-// ── Main operations (compiler initialization — linear, no runtime platform branches) ──
-C('=== Compiler initialization ===');
+if (isLinux) {
+  C('Linux exit syscall blob (' + exitBlobLen + ' bytes)');
+  L('13 ' + hx(EXIT_BLOB_OFF, 4) + ' s' + linuxExitBlob.toString('hex'));
+  B();
+}
+
+C('=== Top level: enter main handler (gen1 native + gen2 emitted call) ===');
+L('41 00');
+B();
+
+// ════════════════════════════════════════════════════════════════════════════════
+// H_00 MAIN — compiler driver (init, scan, patch blobs, write)
+// ════════════════════════════════════════════════════════════════════════════════
+C('============================================================');
+C('H_00: Main compiler driver');
+C('============================================================');
+L('40 00');
 C('Allocate 0x40000-byte output buffer -> state_02');
 L('20 02 00040000');
 
@@ -154,7 +189,7 @@ L(SET(0x14, 0)  + ' ; arg_index = 0');
 B();
 
 C('Copy embedded template to output buffer');
-L('84 02 ' + hx(TEMPLATE_BLOB_OFF, 4) + ' ' + hx(tplBytes.length, 4));
+L('84 02 ' + hx(TEMPLATE_BLOB_OFF, 4) + ' ' + hx(tplCopyLen, 4));
 
 C('Setup write_base: output_buf + .text file offset');
 L(GET(0x03, 0x02));
@@ -183,11 +218,64 @@ L('50 0A 00');
 L(GET(0x0C, 0x0A));
 L(GET(0x0D, 0x0B));
 L(ADDV(0x0D, 0x0C));
+L(SET(0x09, 1) + ' ; suppress H_31 first-handler exit prologue during scan');
 L(CH(1)  + ' ; call H_01 main scan loop');
 
+C('Patch embedded blobs into output ELF data section (bootstrap self-hosting)');
+L(GET(0x47, 0x02));
+L(ADD(0x47, 0x9000 + TEMPLATE_BLOB_OFF));
+L(GET(0x48, 0x08));
+L(ADD(0x48, TEMPLATE_BLOB_OFF));
+L(SET(0x53, tplCopyLen));
+L('85 47 48 53');
+L(GET(0x47, 0x02));
+L(ADD(0x47, 0x9000 + STARTUP_BLOB_OFF));
+L(GET(0x48, 0x08));
+L(ADD(0x48, STARTUP_BLOB_OFF));
+L(SET(0x53, outputStartup.length));
+L('85 47 48 53');
+
+if (isLinux) {
+  C('Copy exit syscall blob into output ELF data section');
+  L(GET(0x47, 0x02));
+  L(ADD(0x47, 0x9000 + EXIT_BLOB_OFF));
+  L(GET(0x48, 0x08));
+  L(ADD(0x48, EXIT_BLOB_OFF));
+  L(SET(0x53, exitBlobLen));
+  L('85 47 48 53');
+}
+
+if (isLinux) {
+  C('Expand output ELF data segment to fit bootstrap blobs');
+  L(GET(0x47, 0x02));
+  L(ADD(0x47, ELF_DATA_FILESZ_OFF));
+  L(SET(0x53, TPL_DATA_SIZE));
+  L('55 47 53');
+  L(GET(0x47, 0x02));
+  L(ADD(0x47, ELF_DATA_MEMSZ_OFF));
+  L(SET(0x53, TPL_DATA_SIZE));
+  L('55 47 53');
+}
+
 C('Write output ELF');
-L(SET(0x0E, tplBytes.length));
+L(SET(0x0E, tplWriteLen));
 L('51 02 01 0E');
+if (isLinux) {
+  C('Copy Linux exit syscall bytes into output .text and terminate');
+  L(GET(0x4C, 0x03));
+  L('84 4C ' + hx(EXIT_BLOB_OFF, 4) + ' ' + hx(exitBlobLen, 2));
+  L(ADD(0x0E, exitBlobLen));
+} else {
+  C('Windows exit: xor rcx,rcx + call [ExitProcess]');
+  L(SET(0x45, 0x48)); L(CH(0xE0));
+  L(SET(0x45, 0x31)); L(CH(0xE0));
+  L(SET(0x45, 0xC9)); L(CH(0xE0));
+  L(SET(0x45, 0xFF)); L(CH(0xE0));
+  L(SET(0x45, 0x15)); L(CH(0xE0));
+  L(SET(0x4D, IAT_BASE - CODE_RVA - 4));
+  L(SUBV(0x4D, 0x0E));
+  L(CH(0xE5) + '  ; emit disp32');
+}
 B();
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -219,7 +307,19 @@ L(SET(0x10, 0) + ' ; unknown state, reset');
 L(JMP(0x01));
 B();
 
-// H_20: state 0 - looking for opcode start
+// ── H_14: skip to end of line (used for compile-time blob lines) ───────────────
+C('H_14: skip to end of current source line');
+L(H(0x14));
+L(CMP(0x0C, 0x0D));
+L(JAE(0x4C) + '  ; EOF');
+L(LDB(0x0F, 0x0C, 0) + ' ; read byte');
+L(INC(0x0C));
+L(SET(0x41, 0x0A)); L(CMP(0x0F, 0x41)); L(JE(0x4C) + ' ; LF -> done');
+L(SET(0x41, 0x0D)); L(CMP(0x0F, 0x41)); L(JE(0x4C) + ' ; CR -> done');
+L(JMP(0x14) + ' ; keep skipping');
+B();
+
+// ── H_20: state 0 - looking for opcode start ─────────────────────────────────
 C('H_20: state 0 - looking for opcode start');
 L(H(0x20));
 L(SET(0x41, 0x20)); L(CMP(0x0F, 0x41)); L(JE(0x01) + '  ; space -> skip');
@@ -251,6 +351,10 @@ L(H(0x28));
 L(GET(0x13, 0x11) + ' ; opcode = accumulator');
 L(SET(0x11, 0));
 L(SET(0x12, 0));
+C('Opcode 0x13 blob lines: skip rest of line (hex embedded at compile time)');
+L(SET(0x41, 0x13)); L(CMP(0x13, 0x41)); L(JE(0x14) + ' ; -> H_14 skip line');
+C('Opcode 0x12 string defs: skip rest of line (embedded at compile time)');
+L(SET(0x41, 0x12)); L(CMP(0x13, 0x41)); L(JE(0x14) + ' ; -> H_14 skip line');
 C('LF/CR/; -> emit immediately (no args)');
 L(SET(0x41, 0x0A)); L(CMP(0x0F, 0x41)); L(JE(0x30) + ' ; LF -> emit');
 L(SET(0x41, 0x0D)); L(CMP(0x0F, 0x41)); L(JE(0x30) + ' ; CR -> emit');
@@ -503,8 +607,15 @@ B();
 
 C('H_5C: opcode 0x51 - emit WriteFile');
 L(H(0x5C));
-L(SET(0x41, 0x51)); L(CMP(0x40, 0x41)); L(JNE(0x4C));
+L(SET(0x41, 0x51)); L(CMP(0x40, 0x41)); L(JNE(0x5D));
 L(CH(0x62) + '  ; opcode 0x51: emit WriteFile');
+L(JMP(0x4C));
+B();
+
+C('H_5D: opcode 0x85 - emit REP MOVSB (state-to-state memcpy)');
+L(H(0x5D));
+L(SET(0x41, 0x85)); L(CMP(0x40, 0x41)); L(JNE(0x4C));
+L(CH(0x8D) + '  ; opcode 0x85: emit state-to-state memcpy');
 L(JMP(0x4C));
 B();
 
@@ -565,6 +676,7 @@ L(SET(0x41, 9)); L(CMP(0x40, 0x41)); L(JBE(0x0D) + '  ; 0-9 digit -> accumulate'
 L(SUB(0x40, 7)  + '  ; A-F: -= 7 (so \'A\'-\'0\'-7 = 10)');
 L(SET(0x41, 15)); L(CMP(0x40, 0x41)); L(JBE(0x0D) + ' ; A-F digit');
 L(SUB(0x40, 32) + '  ; a-f: -= 32');
+L(JMP(0x0D) + '  ; lowercase hex -> accumulate');
 B();
 
 C('H_0D: accumulate nibble into state_11');
@@ -734,29 +846,79 @@ L(INC(0x07) + '          ; fixup_count++');
 L(RET());
 B();
 
-// ── Helper: H_ED/H_EE/H_EF - extract byte0 and quotient from state_51 ────────
-// Input: state_51 = value to decompose
-// Output: state_4F = byte0 (low byte = value mod 256)
-//         state_47 = quotient (value / 256)
-C('H_ED: extract low byte of state_51. state_4F=b0, state_47=b1 (quotient)');
+// ── Helper: H_ED - extract bytes 0..3 from state_51 into state_4F/47/48/49 ─
+C('H_ED: decompose state_51 into 4 LE bytes for imm64 emission');
 L(H(0xED));
-L(GET(0x4F, 0x51) + '  ; state_4F = value');
+L(GET(0x4F, 0x51) + '  ; working value');
 L(SET(0x42, 0x100)  + ' ; threshold = 256');
-L(SET(0x47, 0)      + ' ; quotient = 0');
+L(SET(0x47, 0)      + ' ; byte1 accumulator');
 L(JMP(0xEE));
 B();
 
-C('H_EE: byte-extraction loop body');
+C('H_EE: extract byte0 loop');
 L(H(0xEE));
 L(CMP(0x4F, 0x42));
-L(JB(0xEF) + '  ; state_4F < 256 -> done');
+L(JB(0xEF) + '  ; done -> byte0 in state_4F, quotient in state_47');
 L(SUB(0x4F, 0x100));
 L(INC(0x47));
 L(JMP(0xEE));
 B();
 
-C('H_EF: byte-extraction done');
+C('H_EF: byte0 done - extract bytes 1..3 from quotient chain');
 L(H(0xEF));
+L(GET(0x48, 0x4F) + '  ; state_48 = byte0');
+L(GET(0x4F, 0x47) + '  ; state_4F = quotient');
+L(SET(0x4A, 0)      + ' ; counter');
+L(JMP(0xF1));
+B();
+
+C('H_F1: extract byte1 loop');
+L(H(0xF1));
+L(CMP(0x4F, 0x42));
+L(JB(0xF2) + '  ; byte1 in state_4F');
+L(SUB(0x4F, 0x100));
+L(INC(0x4A));
+L(JMP(0xF1));
+B();
+
+C('H_F2: save byte1, extract byte2');
+L(H(0xF2));
+L(GET(0x47, 0x4F) + '  ; state_47 = byte1');
+L(GET(0x4F, 0x4A) + '  ; state_4F = next quotient');
+L(SET(0x4A, 0));
+L(JMP(0xF3));
+B();
+
+C('H_F3: extract byte2 loop');
+L(H(0xF3));
+L(CMP(0x4F, 0x42));
+L(JB(0xF4) + '  ; byte2 in state_4F');
+L(SUB(0x4F, 0x100));
+L(INC(0x4A));
+L(JMP(0xF3));
+B();
+
+C('H_F4: save byte2, extract byte3');
+L(H(0xF4));
+L(GET(0x49, 0x4F) + '  ; state_49 = byte2');
+L(GET(0x4F, 0x4A) + '  ; state_4F = next quotient');
+L(SET(0x4A, 0));
+L(JMP(0xF5));
+B();
+
+C('H_F5: extract byte3 loop');
+L(H(0xF5));
+L(CMP(0x4F, 0x42));
+L(JB(0xF0) + '  ; byte3 in state_4F');
+L(SUB(0x4F, 0x100));
+L(INC(0x4A));
+L(JMP(0xF5));
+B();
+
+C('H_F0: pack bytes into emit slots');
+L(H(0xF0));
+L(GET(0x4B, 0x4F) + '  ; state_4B = byte3');
+L(GET(0x4F, 0x48) + '  ; state_4F = byte0');
 L(RET());
 B();
 
@@ -770,6 +932,8 @@ C('  First 0x40: emit ExitProcess call (default exit for unknown hh=0)');
 C('  Subsequent 0x40: emit auto-ret (C3) for the PREVIOUS handler');
 C('  Both cases then record handler_table[hh] = state_0E');
 L(H(0x31));
+C('Handler 0 is the main driver: record offset only (no exit/ret preamble)');
+L(SET(0x41, 0)); L(CMP(0x50, 0x41)); L(JE(0x41) + '  ; hh==0 -> H_41 record only');
 C('Check first-handler flag (state_09)');
 L(SET(0x41, 0)); L(CMP(0x09, 0x41)); L(JE(0x40) + '  ; not yet seen -> H_40 (first)');
 C('Not first: emit C3 (auto-ret for previous handler)');
@@ -919,9 +1083,11 @@ L('57 03 0E 45'); L(INC(0x0E));
 L(RET());
 B();
 
-// ── H_37/H_43: opcode 0x41 hh - emit CALL rel32 ──────────────────────────────
-C('H_37: opcode 0x41 hh - emit CALL rel32 (E8 disp32)');
+// ── H_37/H_43: opcode 0x41 hh - emit CALL rel32 (hh==0 -> JMP for meta-output layout) ──
+C('H_37: opcode 0x41 hh - emit CALL rel32 (E8 disp32); hh==0 uses JMP (E9)');
 L(H(0x37));
+C('Handler 0 entry is emitted inline after top-level call site — emit JMP not CALL');
+L(SET(0x41, 0)); L(CMP(0x50, 0x41)); L(JE(0x36) + '  ; hh==0 -> H_36 emit JMP');
 L(CH(0xE7));
 L(SET(0x41, 0)); L(CMP(0x4D, 0x41)); L(JE(0x43));
 L(SET(0x45, 0xE8)); L(CH(0xE0));
@@ -1040,14 +1206,18 @@ B();
 // ════════════════════════════════════════════════════════════════════════════════
 
 // ── H_70: opcode 0x61 ss vv - emit ADD immediate: state[ss] += vv ──────────────
-// Encoding: stGet(RAX,ss); 48 83 C0 <imm8>; stPut(ss,RAX) = 7+4+7 = 18 bytes
-C('H_70: opcode 0x61 ss vv - emit: stGet(RAX,ss); add rax,vv; stPut(ss,RAX)');
+// Encoding: stGet(RAX,ss); 48 81 C0 <imm32>; stPut(ss,RAX)
+C('H_70: opcode 0x61 ss vv - emit: stGet(RAX,ss); add rax,imm32; stPut(ss,RAX)');
 L(H(0x70));
 L(GET(0x46, 0x50)); L(CH(0xE2));   // stGet(RAX, ss)
-L(SET(0x45, 0x48)); L(CH(0xE0));   // ADD RAX, imm8: 48 83 C0 <imm8>
-L(SET(0x45, 0x83)); L(CH(0xE0));
+L(SET(0x45, 0x48)); L(CH(0xE0));   // add rax, imm32: 48 81 C0
+L(SET(0x45, 0x81)); L(CH(0xE0));
 L(SET(0x45, 0xC0)); L(CH(0xE0));
-L('57 03 0E 51'); L(INC(0x0E));    // emit imm8 = state_51
+L(CH(0xED) + '  ; decompose state_51 (vv) into imm32 bytes');
+L('57 03 0E 4F'); L(INC(0x0E));
+L('57 03 0E 47'); L(INC(0x0E));
+L('57 03 0E 49'); L(INC(0x0E));
+L('57 03 0E 4B'); L(INC(0x0E));
 L(GET(0x46, 0x50)); L(CH(0xE3));   // stPut(ss, RAX)
 L(RET());
 B();
@@ -1143,28 +1313,42 @@ L(SET(0x46, 8)); L(CH(0xEC));      // stGet(RSI, 8) = data_base from state_08
 L(SET(0x45, 0x48)); L(CH(0xE0));   // add rsi, blob_off: 48 81 C6 <imm32>
 L(SET(0x45, 0x81)); L(CH(0xE0));
 L(SET(0x45, 0xC6)); L(CH(0xE0));
-L(CH(0xED) + '  ; decompose state_51 (blob_off) into b0,b1');
-L('57 03 0E 4F'); L(INC(0x0E));    // emit b0
-L('57 03 0E 47'); L(INC(0x0E));    // emit b1
-L(SET(0x45, 0));
-L('57 03 0E 45'); L(INC(0x0E));    // emit 0
-L('57 03 0E 45'); L(INC(0x0E));    // emit 0
+L(CH(0xED) + '  ; decompose state_51 (blob_off) into bytes 0..3');
+L('57 03 0E 4F'); L(INC(0x0E));
+L('57 03 0E 47'); L(INC(0x0E));
+L('57 03 0E 49'); L(INC(0x0E));
+L('57 03 0E 4B'); L(INC(0x0E));
 C('mov rcx, size (state_52) as 64-bit immediate');
 L(SET(0x45, 0x48)); L(CH(0xE0));   // movabs rcx, imm64: 48 B9 <8 bytes>
 L(SET(0x45, 0xB9)); L(CH(0xE0));
-C('Decompose state_52 into 8 bytes (only bottom 2 used for small sizes)');
 L(GET(0x51, 0x52) + '  ; state_51 = size (for H_ED decomposition)');
-L(CH(0xED) + '  ; decompose -> state_4F=b0, state_47=b1');
-L('57 03 0E 4F'); L(INC(0x0E));    // emit b0
-L('57 03 0E 47'); L(INC(0x0E));    // emit b1
+L(CH(0xED) + '  ; decompose -> bytes 0..3');
+L('57 03 0E 4F'); L(INC(0x0E));
+L('57 03 0E 47'); L(INC(0x0E));
+L('57 03 0E 49'); L(INC(0x0E));
+L('57 03 0E 4B'); L(INC(0x0E));
 L(SET(0x45, 0));
-L('57 03 0E 45'); L(INC(0x0E));    // emit bytes 2-7 = 0
-L('57 03 0E 45'); L(INC(0x0E));
 L('57 03 0E 45'); L(INC(0x0E));
 L('57 03 0E 45'); L(INC(0x0E));
 L('57 03 0E 45'); L(INC(0x0E));
 L('57 03 0E 45'); L(INC(0x0E));
 L(SET(0x45, 0xF3)); L(CH(0xE0));   // rep movsb: F3 A4
+L(SET(0x45, 0xA4)); L(CH(0xE0));
+L(RET());
+B();
+
+// ── H_8D: opcode 0x85 dd ss sz - emit REP MOVSB: memcpy([state[dd]], [state[ss]], [state[sz]])
+C('H_8D: opcode 0x85 dd ss sz - emit: stGet(RDI,dd); stGet(RSI,ss); stGet(RCX,sz); rep movsb');
+L(H(0x8D));
+L(GET(0x46, 0x50)); L(CH(0xEA));   // stGet(RDI, dd) = dest
+L(GET(0x46, 0x51)); L(CH(0xEC));   // stGet(RSI, ss) = src
+L(GET(0x46, 0x52));                // stGet(RCX, sz)
+L(SET(0x45, 0x49)); L(CH(0xE0));   // REX.W + REX.B
+L(SET(0x45, 0x8B)); L(CH(0xE0));   // MOV
+L(SET(0x45, 0x8F)); L(CH(0xE0));   // mod=10, reg=RCX, rm=R15
+L(CH(0xE1));                        // disp for state_52
+L(CH(0xE4));                        // emit disp32
+L(SET(0x45, 0xF3)); L(CH(0xE0));   // rep movsb
 L(SET(0x45, 0xA4)); L(CH(0xE0));
 L(RET());
 B();
@@ -1440,14 +1624,14 @@ L(SET(0x45, 0x0D)); L(CH(0xE0));   // ModRM(0,1,5) = [rip+disp]
 C('Emit disp32 = -17 for "input.ky" (str_idx=0) or -20 for "output.exe" (str_idx=1)');
 C('We need to check str_idx and emit appropriate disp');
 L(SET(0x41, 0)); L(CMP(0x51, 0x41)); L(JE(0x88) + '  ; str_idx==0 -> disp=-17');
-C('str_idx==1: disp = -20 = 0xFFFFFFEC');
-L(SET(0x4D, 0xFFEC)); L(CH(0xE5));  // emit -20 as LE32 (low 16 bits)
+C('str_idx==1: disp = -20');
+L(SET(0x4D, 0)); L(SUB(0x4D, 20)); L(CH(0xE5));
 L(JMP(0x89));
 B();
 
-C('H_88: disp = -17 = 0xFFFFFFEF for "input.ky"');
+C('H_88: disp = -17 for "input.ky"');
 L(H(0x88));
-L(SET(0x4D, 0xFFEF)); L(CH(0xE5));
+L(SET(0x4D, 0)); L(SUB(0x4D, 17)); L(CH(0xE5));
 B();
 
 C('H_89: filename in RCX -> CreateFileA call');
@@ -1546,11 +1730,11 @@ C('H_8B: emit LEA rcx + CreateFileA for WRITE');
 L(H(0x8B));
 L(SET(0x45, 0x48)); L(CH(0xE0)); L(SET(0x45, 0x8D)); L(CH(0xE0)); L(SET(0x45, 0x0D)); L(CH(0xE0));
 L(SET(0x41, 0)); L(CMP(0x51, 0x41)); L(JE(0x8C) + '  ; str_idx==0 -> disp=-17');
-L(SET(0x4D, 0xFFEC)); L(CH(0xE5));  // disp = -20 for output.exe
+L(SET(0x4D, 0)); L(SUB(0x4D, 20)); L(CH(0xE5));
 L(JMP(0x8D));
 B();
 L(H(0x8C));
-L(SET(0x4D, 0xFFEF)); L(CH(0xE5));  // disp = -17
+L(SET(0x4D, 0)); L(SUB(0x4D, 17)); L(CH(0xE5));
 B();
 L(H(0x8D));
 C('mov rdx, 0x40000000 (GENERIC_WRITE)');

@@ -33,7 +33,11 @@ function parse(text){
 function analyze(tokens){
   const S={},B=[],O=[],H={};let si=0,ch=null;
   for(const t of tokens){
-    if(ch!==null){if(t.op===0x40){ch=t.args[0].v;H[ch]=[];continue;}        if(t.op===0xFF){H[ch].push(t);ch=null;continue;}H[ch].push(t);continue;}
+    if(ch!==null){
+      if(t.op===0xFF){H[ch].push(t);ch=null;continue;}
+      H[ch].push(t);
+      continue;
+    }
     if(t.op===0x12){S[si]={text:t.args[1]?t.args[1].v:(t.args[0].t==='s'?t.args[0].v:'')};si++;}
     else if(t.op===0x13){B.push({off:t.args[0].v,data:t.args[1].raw||Buffer.from(t.args[1].v,'hex')});}
     else if(t.op===0x40){ch=t.args[0].v;H[ch]=[];}
@@ -99,7 +103,7 @@ function compileWin(src){
     else if(o===0x32){
       E.mov_mi64(code,RSP,0x20,0n);E.mov_rr(code,RCX,R14);ld(RDX,sOff);E.mov_ri(code,R8,2n);lr(R9,RSP,0x28);ci('KERNEL32.dll.WriteFile');
     }
-    else if(o===0x40){}
+    else if(o===0x40){code.label('H'+a[0].v);}
     else if(o===0x41){E.call_rel(code,0);code.fixups.push({p:code.tell()-4,n:'H'+a[0].v});}
     else if(o===0x50){
       ld(RCX,strPos[a[1].v]+4);
@@ -222,7 +226,7 @@ function compileLinux(src){
     const a=op.args,o=op.op;
     if(o===0x30){linux.stSet(a[0].v,a[1]?a[1].v:0);}
     else if(o===0x31||o===0x33||o===0x32){}
-    else if(o===0x40){}
+    else if(o===0x40){code.label('H'+a[0].v);}
     else if(o===0x41){E.call_rel(code,0);code.fixups.push({p:code.tell()-4,n:'H'+a[0].v});}
     else if(o===0x50){linux.emitLoadFile(a[0].v,a[1].v);}
     else if(o===0x51){linux.emitWriteFile(a[0].v,a[1].v,a[2]?a[2].v:0);}

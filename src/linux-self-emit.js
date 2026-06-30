@@ -30,19 +30,21 @@ function emitBuf(buf) {
   return out;
 }
 
+function emitSignedDisp32(magnitude) {
+  // Encode negative displacement as u32-LE via SET(0) then SUB magnitude.
+  return [SET(0x4D, 0), SUB(0x4D, magnitude), CH(0xE5)];
+}
+
 function emitJmpOverString(name) {
   const str = Buffer.from(name + '\0', 'ascii');
   const jmpLen = 2;
   const leaLen = 7;
-  const disp = -(str.length + jmpLen + leaLen);
   const lines = [];
-  lines.push(`EB ${hx(str.length + leaLen, 2)}`);
-  lines.push(INC(0x0E));
-  lines.push(INC(0x0E));
+  lines.push(...emitByte(0xEB));
+  lines.push(...emitByte(str.length));
   for (const b of str) lines.push(...emitByte(b));
   lines.push(...emitBuf([0x48, 0x8d, 0x3d]));
-  lines.push(SET(0x4D, disp & 0xffff));
-  lines.push(CH(0xE5));
+  lines.push(...emitSignedDisp32(str.length + leaLen));
   return lines;
 }
 
@@ -62,9 +64,9 @@ function genLinuxAllocHandler() {
   lines.push(CH(0xED) + '  ; size from state_51');
   lines.push('57 03 0E 4F'); lines.push(INC(0x0E));
   lines.push('57 03 0E 47'); lines.push(INC(0x0E));
+  lines.push('57 03 0E 49'); lines.push(INC(0x0E));
+  lines.push('57 03 0E 4B'); lines.push(INC(0x0E));
   lines.push(SET(0x45, 0));
-  lines.push('57 03 0E 45'); lines.push(INC(0x0E));
-  lines.push('57 03 0E 45'); lines.push(INC(0x0E));
   lines.push('57 03 0E 45'); lines.push(INC(0x0E));
   lines.push('57 03 0E 45'); lines.push(INC(0x0E));
   lines.push('57 03 0E 45'); lines.push(INC(0x0E));
