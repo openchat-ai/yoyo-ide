@@ -25,5 +25,8 @@ bootstrap-update-baseline:
 bootstrap-selfhost:
 	bash scripts/bootstrap-selfhost.sh
 
+bootstrap-native:
+	bash scripts/bootstrap-native.sh
+
 test-stage2:
 	$(STAGE2)

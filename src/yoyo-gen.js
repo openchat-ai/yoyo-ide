@@ -3,6 +3,9 @@ const fs   = require('fs');
 const path = require('path');
 const E    = require('./encode-x64.js');
 const { PE } = require('./pe-builder.js');
+const { ELF, BASE } = require('./elf-builder.js');
+const { STATE_TARGET } = require('./platform-config.js');
+const { buildLinuxOutputStartup } = require('./linux-runtime.js');
 
 // ─── Fixed layout constants ───────────────────────────────────────────────────
 const FUNCS      = ['ExitProcess','GetStdHandle','WriteFile','ReadFile',
@@ -24,6 +27,14 @@ tplPE.setCode(Buffer.alloc(TEXT_VS, 0x90));
 tplPE.setData(Buffer.alloc(0x4000, 0));
 const peBytes = tplPE.build();
 const peHex   = peBytes.toString('hex');
+
+const tplELF = new ELF();
+tplELF.setCode(Buffer.alloc(TEXT_VS, 0x90));
+tplELF.setData(Buffer.alloc(0x4000, 0));
+const elfBytes = tplELF.build();
+const elfHex = elfBytes.toString('hex');
+const LINUX_CODE_RVA = BASE + 0x1000;
+const linuxOutputStartup = buildLinuxOutputStartup(LINUX_CODE_RVA + TEXT_VS);
 
 // ─── Build startup code blob ──────────────────────────────────────────────
 // This is the x64 code emitted at the start of every compiled output program.
@@ -51,8 +62,10 @@ const startupBlob = buildStartup();
 // startupBlob length varies with IAT_BASE; use actual .length for copy
 
 // Data section offsets (in yoyo.exe's 64KB data section)
-const PE_BLOB_OFF      = 0x4000;  // embedded PE template
-const STARTUP_BLOB_OFF = 0xCC00;  // startup code blob
+const PE_BLOB_OFF      = 0x4000;
+const ELF_BLOB_OFF     = 0xD000;
+const STARTUP_BLOB_OFF = 0xCC00;
+const LINUX_STARTUP_OFF = 0xCD00;
 
 // ─── yoyo source line builder ───────────────────────────────────────────────────
 const lines = [];
@@ -87,26 +100,31 @@ const STR  = s         => '12 s' + Buffer.from(s + '\0', 'ascii').toString('hex'
 // YOYO SOURCE GENERATION
 // ════════════════════════════════════════════════════════════════════════════════
 
-C('mini-kyc.ky - Self-hosting yoyo compiler (Phase 1)');
-C('Compiles .ky source -> Windows x64 PE executable');
-C('Phase 1: handles opcodes 40 FF 30 60 65 66 70 71 41');
+C('Dual-target self-hosting yoyo compiler (PE + ELF)');
+C('state_FB: 0=Windows PE, 1=Linux ELF (set by host startup)');
 B();
 
 // ── String definitions ────────────────────────────────────────────────────────
 C('String definitions');
-L(STR('input.ky'));   // string index 0
-L(STR('output.exe')); // string index 1
+L(STR('input.ky'));
+L(STR('output.exe'));
+L(STR('output'));
 B();
 
-// ── Embedded PE template blob ─────────────────────────────────────────────────
 C('Embedded PE template blob (' + peBytes.length + ' = 0x' + hx(peBytes.length, 4) + ' bytes)');
 L('13 ' + hx(PE_BLOB_OFF, 4) + ' s' + peHex);
 B();
 
-// ── Startup code blob ─────────────────────────────────────────────────────────
-C('Startup code blob (' + startupBlob.length + ' bytes at data offset 0x' + hx(STARTUP_BLOB_OFF, 4) + ')');
-C('VirtualAlloc state array -> R15, GetStdHandle stdout -> R14');
+C('Embedded ELF template blob (' + elfBytes.length + ' = 0x' + hx(elfBytes.length, 4) + ' bytes)');
+L('13 ' + hx(ELF_BLOB_OFF, 4) + ' s' + elfHex);
+B();
+
+C('Windows startup code blob (' + startupBlob.length + ' bytes)');
 L('13 ' + hx(STARTUP_BLOB_OFF, 4) + ' s' + startupBlob.toString('hex'));
+B();
+
+C('Linux startup code blob (' + linuxOutputStartup.length + ' bytes)');
+L('13 ' + hx(LINUX_STARTUP_OFF, 4) + ' s' + linuxOutputStartup.toString('hex'));
 B();
 
 // ── Main operations (compiler initialization) ─────────────────────────────────
@@ -129,9 +147,17 @@ L(SET(0x13, 0)  + ' ; opcode = 0');
 L(SET(0x14, 0)  + ' ; arg_index = 0');
 B();
 
-C('Copy embedded PE template to output buffer');
+C('Copy embedded template to output buffer (branch on state_FB)');
+L(CMP(0xFB, 0));
+L(JNE(0xC0) + ' ; linux -> H_C0');
 L('84 02 ' + hx(PE_BLOB_OFF, 4) + ' ' + hx(peBytes.length, 4));
+L(JMP(0xC2) + ' ; -> H_C2');
 B();
+L(H(0xC0));
+L('84 02 ' + hx(ELF_BLOB_OFF, 4) + ' ' + hx(elfBytes.length, 4));
+L(JMP(0xC2) + ' ; -> H_C2');
+B();
+L(H(0xC2));
 
 C('=== H_30 emitter initialization ===');
 C('Setup write base: state_03 = output_buf + 0x400 (= .text file offset)');
@@ -151,18 +177,35 @@ C('Initialize emitter state: fixup_count=0, first_handler_flag=0');
 L(SET(0x07, 0)  + ' ; fixup_count = 0');
 L(SET(0x09, 0)  + ' ; first_handler_flag = 0');
 
-C('Copy startup code (' + startupBlob.length + ' bytes) to output .text section (at offset 0)');
+C('Copy startup code to output .text (branch on state_FB)');
+L(CMP(0xFB, 0));
+L(JNE(0xC1) + ' ; linux -> H_C1');
 L(GET(0x4C, 0x03));
 L('84 4C ' + hx(STARTUP_BLOB_OFF, 4) + ' ' + hx(startupBlob.length, 2));
-L(ADD(0x0E, startupBlob.length) + ' ; advance code_offset by ' + startupBlob.length);
+L(ADD(0x0E, startupBlob.length));
+L(JMP(0xC3) + ' ; -> scan');
+B();
+L(H(0xC1));
+L(GET(0x4C, 0x03));
+L('84 4C ' + hx(LINUX_STARTUP_OFF, 4) + ' ' + hx(linuxOutputStartup.length, 2));
+L(ADD(0x0E, linuxOutputStartup.length));
+L(JMP(0xC3) + ' ; -> scan');
 B();
 
+L(H(0xC3));
 C('Run scanner -> emitter');
 L(CH(1)  + ' ; call H_01 main scan loop');
-C('Set total file size = PE blob size (' + hx(peBytes.length, 4) + ')');
+C('Set total file size and write output (branch on state_FB)');
+L(CMP(0xFB, 0));
+L(JNE(0xC4) + ' ; linux -> H_C4');
 L(SET(0x0E, peBytes.length));
-C('Write output.exe');
-L('51 02 01 0E');  // WriteFile: state_02 buffer, "output.exe", state_0E (write pos)
+L('51 02 01 0E');
+L('A0 4831ff48c7c03c00000000000f05');
+B();
+L(H(0xC4));
+L(SET(0x0E, elfBytes.length));
+L('51 02 02 0E');
+L('A0 4831ff48c7c03c00000000000f05');
 B();
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -740,20 +783,37 @@ L(SET(0x45, 0xC3)); L(CH(0xE0));
 L(JMP(0x41) + '  ; -> H_41 record offset');
 B();
 
-C('H_40: first-handler prologue - emit ExitProcess(0) call (9 bytes)');
-C('  xor rcx,rcx (3B) + call [ExitProcess] (6B)');
-C('  disp = ExitProcess_IAT - (CODE_RVA + state_0E + 9) = ' + hx(IAT_BASE - CODE_RVA - 4, 4) + ' - state_0E');
-C('  (state_0E here = X+5 after emitting 48 31 C9 FF 15)');
+C('H_40: first-handler prologue - emit exit call (branch on state_FB)');
 L(H(0x40));
-L(SET(0x45, 0x48)); L(CH(0xE0));   // xor rcx,rcx: 48
-L(SET(0x45, 0x31)); L(CH(0xE0));   //              31
-L(SET(0x45, 0xC9)); L(CH(0xE0));   //              C9
-L(SET(0x45, 0xFF)); L(CH(0xE0));   // call [mem]: FF
-L(SET(0x45, 0x15)); L(CH(0xE0));   //             15
-C('Compute disp32 = ' + hx(IAT_BASE - CODE_RVA - 4, 4) + ' - state_0E  (ExitProcess IAT = IAT_BASE)');
+L(CMP(0xFB, 0));
+L(JNE(0xC6) + '  ; linux -> H_C6');
+C('Windows: xor rcx,rcx + call [ExitProcess]');
+L(SET(0x45, 0x48)); L(CH(0xE0));
+L(SET(0x45, 0x31)); L(CH(0xE0));
+L(SET(0x45, 0xC9)); L(CH(0xE0));
+L(SET(0x45, 0xFF)); L(CH(0xE0));
+L(SET(0x45, 0x15)); L(CH(0xE0));
 L(SET(0x4D, IAT_BASE - CODE_RVA - 4));
 L(SUBV(0x4D, 0x0E));
 L(CH(0xE5) + '  ; emit disp32');
+L(JMP(0xC7) + '  ; -> set flag');
+B();
+C('H_C6: Linux exit: xor rdi,rdi; mov rax,60; syscall');
+L(H(0xC6));
+L(SET(0x45, 0x48)); L(CH(0xE0));
+L(SET(0x45, 0x31)); L(CH(0xE0));
+L(SET(0x45, 0xFF)); L(CH(0xE0));
+L(SET(0x45, 0xC7)); L(CH(0xE0));
+L(SET(0x45, 0xC0)); L(CH(0xE0));
+L(SET(0x45, 0x3C)); L(CH(0xE0));
+L(SET(0x45, 0x00)); L(CH(0xE0));
+L(SET(0x45, 0x00)); L(CH(0xE0));
+L(SET(0x45, 0x00)); L(CH(0xE0));
+L(SET(0x45, 0x00)); L(CH(0xE0));
+L(SET(0x45, 0x0F)); L(CH(0xE0));
+L(SET(0x45, 0x05)); L(CH(0xE0));
+B();
+L(H(0xC7));
 L(SET(0x09, 1) + '  ; set first_handler_flag');
 B();
 
