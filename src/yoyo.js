@@ -138,7 +138,9 @@ function compile(src){
     else if(o===0x70){code.jmp32('H'+a[0].v);}
     else if(o===0x71){code.jcc32(0,'H'+a[0].v);}  // je
     else if(o===0x72){code.jcc32(1,'H'+a[0].v);}  // jne
-    else if(o===0x73){code.jcc32(2,'H'+a[0].v);}  // jl
+    else if(o===0x82){code.jcc32(2,'H'+a[0].v);}  // jl
+    else if(o===0x83){code.jcc32(5,'H'+a[0].v);}  // jg
+    else if(o===0x73){code.jcc32(2,'H'+a[0].v);}  // jl (legacy)
     else if(o===0x74){code.jcc32(3,'H'+a[0].v);}  // jge
     else if(o===0x75){code.jcc32(4,'H'+a[0].v);}  // jle
     else if(o===0x76){code.jcc32(5,'H'+a[0].v);}  // jg
