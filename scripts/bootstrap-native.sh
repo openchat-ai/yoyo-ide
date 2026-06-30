@@ -12,8 +12,8 @@ trap cleanup EXIT
 
 echo "=== yoyo native Linux bootstrap ==="
 
-echo "[1] node yoyo-gen.js"
-node src/yoyo-gen.js >/dev/null
+echo "[1] node yoyo-gen.js --target=linux"
+node src/yoyo-gen.js --target=linux >/dev/null
 
 echo "[2] node yoyo.js --target=linux -> build/yoyo (gen1)"
 node src/yoyo.js --target=linux projects/yoyo.ty build/yoyo

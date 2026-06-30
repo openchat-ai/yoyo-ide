@@ -56,8 +56,8 @@ function genLinuxAllocHandler() {
   syscall(tail);
 
   const lines = [];
-  lines.push('; H_D0: Linux mmap alloc emit');
-  lines.push(H(0xD0));
+  lines.push('; H_60: Linux mmap alloc emit');
+  lines.push(H(0x60));
   lines.push(...emitBuf([0x48, 0xbf, 0, 0, 0, 0, 0, 0, 0, 0, 0x48, 0xbe]));
   lines.push(CH(0xED) + '  ; size from state_51');
   lines.push('57 03 0E 4F'); lines.push(INC(0x0E));
@@ -79,21 +79,15 @@ function genLinuxAllocHandler() {
 
 function genLinuxLoadFileHandler() {
   const lines = [];
-  lines.push('; H_D1: Linux LoadFile emit');
-  lines.push(H(0xD1));
+  lines.push('; H_61: Linux LoadFile emit');
+  lines.push(H(0x61));
   lines.push(SET(0x41, 0));
   lines.push('65 51 41');
-  lines.push(JE(0xD3) + '  ; str_idx==0');
-  lines.push(SET(0x41, 2));
-  lines.push('65 51 42');
-  lines.push(JE(0xD5) + '  ; str_idx==2');
-  lines.push(...emitJmpOverString('output.exe'));
+  lines.push(JE(0xD3) + '  ; str_idx==0 -> input.ky');
+  lines.push(...emitJmpOverString('output'));
   lines.push(JMP(0xD6));
   lines.push(H(0xD3));
   lines.push(...emitJmpOverString('input.ky'));
-  lines.push(JMP(0xD6));
-  lines.push(H(0xD5));
-  lines.push(...emitJmpOverString('output'));
   lines.push(H(0xD6));
 
   const open = new E.Buf();
@@ -144,21 +138,16 @@ function genLinuxLoadFileHandler() {
 
 function genLinuxWriteFileHandler() {
   const lines = [];
-  lines.push('; H_D2: Linux WriteFile emit');
-  lines.push(H(0xD2));
+  lines.push('; H_62: Linux WriteFile emit');
+  lines.push(H(0x62));
   lines.push(SET(0x41, 0));
   lines.push('65 51 41');
-  lines.push(JE(0xD7) + '  ; str_idx==0');
-  lines.push(SET(0x41, 2));
-  lines.push('65 51 42');
-  lines.push(JE(0xD9) + '  ; str_idx==2');
-  lines.push(...emitJmpOverString('output.exe'));
+  lines.push(JE(0xD7) + '  ; str_idx==0 -> input.ky');
+  lines.push(...emitJmpOverString('output'));
   lines.push(JMP(0xDA));
   lines.push(H(0xD7));
   lines.push(...emitJmpOverString('input.ky'));
   lines.push(JMP(0xDA));
-  lines.push(H(0xD9));
-  lines.push(...emitJmpOverString('output'));
   lines.push(H(0xDA));
 
   const open = new E.Buf();

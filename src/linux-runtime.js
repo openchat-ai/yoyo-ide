@@ -18,8 +18,6 @@ function buildLinuxStartup(dataRva, continueOff) {
   E.lea_rip(b, RAX, dataRva - (CODE_RVA + leaData + 7));
   E.mov_mr64(b, R15, 8 * 8, RAX);
   E.mov_ri(b, R14, 1n);
-  E.mov_ri(b, RAX, 1n);
-  E.mov_mr64(b, R15, STATE_TARGET * 8, RAX);
   if (continueOff !== undefined) E.jmp_rel(b, continueOff - b.tell() - 5);
   return b.b.slice(0, b.tell());
 }
@@ -32,8 +30,6 @@ function buildLinuxOutputStartup(dataRva) {
   E.lea_rip(b, RAX, dataRva - (CODE_RVA + leaData + 7));
   E.mov_mr64(b, R15, 8 * 8, RAX);
   E.mov_ri(b, R14, 1n);
-  E.mov_ri(b, RAX, 1n);
-  E.mov_mr64(b, R15, STATE_TARGET * 8, RAX);
   return b.b.slice(0, b.tell());
 }
 
@@ -61,15 +57,27 @@ function makeLinuxEmit(code, dr, strs, strPos) {
     syscall(code);
     E.mov_rr(code, R12, RAX);
 
+    E.mov_rr(code, RDI, R13);
+    E.mov_ri(code, RSI, 0n);
+    E.mov_ri(code, RDX, 0n);
+    E.mov_ri(code, RAX, 8n);
+    syscall(code);
+
     E.mov_ri(code, RDI, 0n);
     E.mov_rr(code, RSI, R12);
     E.mov_ri(code, RDX, 3n);
-    E.mov_ri(code, R10, 1n);
-    E.mov_rr(code, R8, R13);
+    E.mov_ri(code, R10, 0x22n);
+    E.mov_ri(code, R8, -1n);
     E.xor_rr(code, R9, R9);
     E.mov_ri(code, RAX, BigInt(LINUX_SYSCALL.mmap));
     syscall(code);
     stPut(stateId, RAX);
+
+    E.mov_rr(code, RDI, R13);
+    stGet(RSI, stateId);
+    E.mov_rr(code, RDX, R12);
+    E.mov_ri(code, RAX, BigInt(LINUX_SYSCALL.read));
+    syscall(code);
     stPut(stateId + 1, R12);
 
     E.mov_rr(code, RDI, R13);

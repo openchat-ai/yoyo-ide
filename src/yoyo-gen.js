@@ -8,6 +8,18 @@ const { STATE_TARGET, ELF_TEXT_FILE_OFF, PE_TEXT_FILE_OFF } = require('./platfor
 const { buildLinuxOutputStartup } = require('./linux-runtime.js');
 const { appendLinuxEmitHandlers } = require('./linux-self-emit.js');
 
+function parseTarget(argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg.startsWith('--target=')) return arg.slice(9).toLowerCase();
+    if (arg === '--target' && argv[i + 1]) return argv[i + 1].toLowerCase();
+  }
+  return 'win';
+}
+
+const target = parseTarget(process.argv.slice(2));
+const isLinux = target === 'linux';
+
 // ─── Fixed layout constants ───────────────────────────────────────────────────
 const FUNCS      = ['ExitProcess','GetStdHandle','WriteFile','ReadFile',
                     'CreateFileA','GetFileSize','CloseHandle','VirtualAlloc'];
@@ -63,10 +75,8 @@ const startupBlob = buildStartup();
 // startupBlob length varies with IAT_BASE; use actual .length for copy
 
 // Data section offsets (in yoyo.exe's 64KB data section)
-const PE_BLOB_OFF      = 0x4000;
-const ELF_BLOB_OFF     = 0xD000;
-const STARTUP_BLOB_OFF = 0xCC00;
-const LINUX_STARTUP_OFF = 0xCD00;
+const TEMPLATE_BLOB_OFF = 0x4000;
+const STARTUP_BLOB_OFF  = 0xCC00;
 
 // ─── yoyo source line builder ───────────────────────────────────────────────────
 const lines = [];
@@ -101,40 +111,35 @@ const STR  = s         => '12 s' + Buffer.from(s + '\0', 'ascii').toString('hex'
 // YOYO SOURCE GENERATION
 // ════════════════════════════════════════════════════════════════════════════════
 
-C('Dual-target self-hosting yoyo compiler (PE + ELF)');
-C('state_FB: 0=Windows PE, 1=Linux ELF (set by host startup)');
+C((isLinux ? 'Linux ELF' : 'Windows PE') + ' self-hosting yoyo compiler');
 B();
 
 // ── String definitions ────────────────────────────────────────────────────────
 C('String definitions');
 L(STR('input.ky'));
-L(STR('output.exe'));
-L(STR('output'));
+L(STR(isLinux ? 'output' : 'output.exe'));
 B();
 
-C('Embedded PE template blob (' + peBytes.length + ' = 0x' + hx(peBytes.length, 4) + ' bytes)');
-L('13 ' + hx(PE_BLOB_OFF, 4) + ' s' + peHex);
+const tplBytes = isLinux ? elfBytes : peBytes;
+const tplHex = isLinux ? elfHex : peHex;
+const tplTextOff = isLinux ? ELF_TEXT_FILE_OFF : PE_TEXT_FILE_OFF;
+const outputStartup = isLinux ? linuxOutputStartup : startupBlob;
+
+C('Embedded template blob (' + tplBytes.length + ' = 0x' + hx(tplBytes.length, 4) + ' bytes)');
+L('13 ' + hx(TEMPLATE_BLOB_OFF, 4) + ' s' + tplHex);
 B();
 
-C('Embedded ELF template blob (' + elfBytes.length + ' = 0x' + hx(elfBytes.length, 4) + ' bytes)');
-L('13 ' + hx(ELF_BLOB_OFF, 4) + ' s' + elfHex);
+C('Output-program startup blob (' + outputStartup.length + ' bytes)');
+L('13 ' + hx(STARTUP_BLOB_OFF, 4) + ' s' + outputStartup.toString('hex'));
 B();
 
-C('Windows startup code blob (' + startupBlob.length + ' bytes)');
-L('13 ' + hx(STARTUP_BLOB_OFF, 4) + ' s' + startupBlob.toString('hex'));
-B();
-
-C('Linux startup code blob (' + linuxOutputStartup.length + ' bytes)');
-L('13 ' + hx(LINUX_STARTUP_OFF, 4) + ' s' + linuxOutputStartup.toString('hex'));
-B();
-
-// ── Main operations (compiler initialization) ─────────────────────────────────
+// ── Main operations (compiler initialization — linear, no runtime platform branches) ──
 C('=== Compiler initialization ===');
-C('Read input.ky -> state_0A (buffer ptr), state_0B (file size)');
-L('50 0A 00');
-
 C('Allocate 0x40000-byte output buffer -> state_02');
 L('20 02 00040000');
+
+C('Read input.ky -> state_0A (buffer ptr), state_0B (file size)');
+L('50 0A 00');
 
 C('Initialize scanner state variables');
 L(SET(0x0E, 0)  + ' ; code_offset = 0');
@@ -148,31 +153,12 @@ L(SET(0x13, 0)  + ' ; opcode = 0');
 L(SET(0x14, 0)  + ' ; arg_index = 0');
 B();
 
-C('Copy embedded template to output buffer (branch on state_FB)');
-L(CMP(0xFB, 0));
-L(JNE(0xC0) + ' ; linux -> H_C0');
-L('84 02 ' + hx(PE_BLOB_OFF, 4) + ' ' + hx(peBytes.length, 4));
-L(JMP(0xC2) + ' ; -> H_C2');
-B();
-L(H(0xC0));
-L('84 02 ' + hx(ELF_BLOB_OFF, 4) + ' ' + hx(elfBytes.length, 4));
-L(JMP(0xC2) + ' ; -> H_C2');
-B();
-L(H(0xC2));
+C('Copy embedded template to output buffer');
+L('84 02 ' + hx(TEMPLATE_BLOB_OFF, 4) + ' ' + hx(tplBytes.length, 4));
 
-C('=== H_30 emitter initialization ===');
-C('Setup write_base: output_buf + PE(0x400) or ELF(0x1000) .text file offset');
+C('Setup write_base: output_buf + .text file offset');
 L(GET(0x03, 0x02));
-L(CMP(0xFB, 0));
-L(JNE(0xC8) + ' ; linux -> H_C8');
-L(ADD(0x03, PE_TEXT_FILE_OFF));
-L(JMP(0xC9) + ' ; -> H_C9');
-B();
-L(H(0xC8));
-L(ADD(0x03, ELF_TEXT_FILE_OFF));
-L(JMP(0xC9) + ' ; -> H_C9');
-B();
-L(H(0xC9));
+L(ADD(0x03, tplTextOff));
 
 C('Allocate handler offset table (256 entries x4 bytes = 1024) -> state_04');
 L('20 04 400');
@@ -187,39 +173,21 @@ C('Initialize emitter state: fixup_count=0, first_handler_flag=0');
 L(SET(0x07, 0)  + ' ; fixup_count = 0');
 L(SET(0x09, 0)  + ' ; first_handler_flag = 0');
 
-C('Copy startup code to output .text (branch on state_FB)');
-L(CMP(0xFB, 0));
-L(JNE(0xC1) + ' ; linux -> H_C1');
+C('Copy startup code to output .text');
 L(GET(0x4C, 0x03));
-L('84 4C ' + hx(STARTUP_BLOB_OFF, 4) + ' ' + hx(startupBlob.length, 2));
-L(ADD(0x0E, startupBlob.length));
-L(JMP(0xC3) + ' ; -> scan');
-B();
-L(H(0xC1));
-L(GET(0x4C, 0x03));
-L('84 4C ' + hx(LINUX_STARTUP_OFF, 4) + ' ' + hx(linuxOutputStartup.length, 2));
-L(ADD(0x0E, linuxOutputStartup.length));
-L(JMP(0xC3) + ' ; -> scan');
-B();
+L('84 4C ' + hx(STARTUP_BLOB_OFF, 4) + ' ' + hx(outputStartup.length, 2));
+L(ADD(0x0E, outputStartup.length));
 
-L(H(0xC3));
 C('Run scanner -> emitter');
 L('50 0A 00');
 L(GET(0x0C, 0x0A));
 L(GET(0x0D, 0x0B));
 L(ADDV(0x0D, 0x0C));
 L(CH(1)  + ' ; call H_01 main scan loop');
-C('Set total file size and write output (branch on state_FB)');
-L(CMP(0xFB, 0));
-L(JNE(0xC4) + ' ; linux -> H_C4');
-L(SET(0x0E, peBytes.length));
+
+C('Write output ELF');
+L(SET(0x0E, tplBytes.length));
 L('51 02 01 0E');
-L('A0 4831ff48c7c03c00000000000f05');
-B();
-L(H(0xC4));
-L(SET(0x0E, elfBytes.length));
-L('51 02 02 0E');
-L('A0 4831ff48c7c03c00000000000f05');
 B();
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -522,15 +490,13 @@ B();
 C('H_5A: opcode 0x20 - emit VirtualAlloc / mmap');
 L(H(0x5A));
 L(SET(0x41, 0x20)); L(CMP(0x40, 0x41)); L(JNE(0x5B));
-L(CMP(0xFB, 0)); L(JNE(0xD0) + '  ; linux -> H_D0');
-L(CH(0x60) + '  ; opcode 0x20: emit VirtualAlloc');
+L(CH(0x60) + '  ; opcode 0x20: emit alloc');
 L(JMP(0x4C));
 B();
 
 C('H_5B: opcode 0x50 - emit LoadFile');
 L(H(0x5B));
 L(SET(0x41, 0x50)); L(CMP(0x40, 0x41)); L(JNE(0x5C));
-L(CMP(0xFB, 0)); L(JNE(0xD1) + '  ; linux -> H_D1');
 L(CH(0x61) + '  ; opcode 0x50: emit LoadFile');
 L(JMP(0x4C));
 B();
@@ -538,7 +504,6 @@ B();
 C('H_5C: opcode 0x51 - emit WriteFile');
 L(H(0x5C));
 L(SET(0x41, 0x51)); L(CMP(0x40, 0x41)); L(JNE(0x4C));
-L(CMP(0xFB, 0)); L(JNE(0xD2) + '  ; linux -> H_D2');
 L(CH(0x62) + '  ; opcode 0x51: emit WriteFile');
 L(JMP(0x4C));
 B();
@@ -812,23 +777,10 @@ L(SET(0x45, 0xC3)); L(CH(0xE0));
 L(JMP(0x41) + '  ; -> H_41 record offset');
 B();
 
-C('H_40: first-handler prologue - emit exit call (branch on state_FB)');
+C('H_40: first-handler prologue - emit exit call');
 L(H(0x40));
-L(CMP(0xFB, 0));
-L(JNE(0xC6) + '  ; linux -> H_C6');
-C('Windows: xor rcx,rcx + call [ExitProcess]');
-L(SET(0x45, 0x48)); L(CH(0xE0));
-L(SET(0x45, 0x31)); L(CH(0xE0));
-L(SET(0x45, 0xC9)); L(CH(0xE0));
-L(SET(0x45, 0xFF)); L(CH(0xE0));
-L(SET(0x45, 0x15)); L(CH(0xE0));
-L(SET(0x4D, IAT_BASE - CODE_RVA - 4));
-L(SUBV(0x4D, 0x0E));
-L(CH(0xE5) + '  ; emit disp32');
-L(JMP(0xC7) + '  ; -> set flag');
-B();
-C('H_C6: Linux exit: xor rdi,rdi; mov rax,60; syscall');
-L(H(0xC6));
+if (isLinux) {
+C('Linux exit: xor rdi,rdi; mov rax,60; syscall');
 L(SET(0x45, 0x48)); L(CH(0xE0));
 L(SET(0x45, 0x31)); L(CH(0xE0));
 L(SET(0x45, 0xFF)); L(CH(0xE0));
@@ -841,8 +793,17 @@ L(SET(0x45, 0x00)); L(CH(0xE0));
 L(SET(0x45, 0x00)); L(CH(0xE0));
 L(SET(0x45, 0x0F)); L(CH(0xE0));
 L(SET(0x45, 0x05)); L(CH(0xE0));
-B();
-L(H(0xC7));
+} else {
+C('Windows: xor rcx,rcx + call [ExitProcess]');
+L(SET(0x45, 0x48)); L(CH(0xE0));
+L(SET(0x45, 0x31)); L(CH(0xE0));
+L(SET(0x45, 0xC9)); L(CH(0xE0));
+L(SET(0x45, 0xFF)); L(CH(0xE0));
+L(SET(0x45, 0x15)); L(CH(0xE0));
+L(SET(0x4D, IAT_BASE - CODE_RVA - 4));
+L(SUBV(0x4D, 0x0E));
+L(CH(0xE5) + '  ; emit disp32');
+}
 L(SET(0x09, 1) + '  ; set first_handler_flag');
 B();
 
@@ -1339,12 +1300,13 @@ L('57 03 0E 45'); L(INC(0x0E));
 L(RET());
 B();
 
+// ── H_60/61/62: platform I/O emitters ───────────────────────────────────────────
+if (!isLinux) {
 // ── H_60: opcode 0x20 id sz - emit VirtualAlloc ────────────────────────────────
 // Emits: xor rcx,rcx; mov rdx,size; mov r8,0x3000; mov r9,0x40;
 //        call [rip + VAlloc_IAT]; stPut(id,rax)
 C('H_60: opcode 0x20 id sz - emit VirtualAlloc(state[id]=VirtualAlloc(0,sz,0x3000,0x40))');
 L(H(0x60));
-L(CMP(0xFB, 0)); L(JNE(0xD0) + '  ; linux -> H_D0');
 C('xor rcx, rcx');
 L(SET(0x45, 0x48)); L(CH(0xE0));   // 48 31 C9
 L(SET(0x45, 0x31)); L(CH(0xE0));
@@ -1429,7 +1391,6 @@ B();
 // Embed filename inline using jmp-over + LEA trick, then CreateFileA + GetFileSize + VirtualAlloc + ReadFile + CloseHandle
 C('H_61: opcode 0x50 id str_idx - emit LoadFile');
 L(H(0x61));
-L(CMP(0xFB, 0)); L(JNE(0xD1) + '  ; linux -> H_D1');
 C('Embed filename: check if str_idx==0 ("input.ky") or str_idx==1 ("output.exe")');
 C('Use jmp-over-filename trick for both cases');
 L(SET(0x41, 0)); L(CMP(0x51, 0x41)); L(JE(0x86) + '  ; str_idx==0 -> "input.ky"');
@@ -1558,10 +1519,8 @@ B();
 // ── H_62: opcode 0x51 id str_idx sz - emit WriteFile ──────────────────────────
 C('H_62: opcode 0x51 id str_idx sz - emit WriteFile');
 L(H(0x62));
-L(CMP(0xFB, 0)); L(JNE(0xD2) + '  ; linux -> H_D2');
 C('Embed filename (same as LoadFile)');
 L(SET(0x41, 0)); L(CMP(0x51, 0x41)); L(JE(0x8A) + '  ; str_idx==0 -> "input.ky"');
-L(SET(0x41, 2)); L(CMP(0x51, 0x41)); L(JE(0x8E) + '  ; str_idx==2 -> "output"');
 C('str_idx==1: embed "output.exe"');
 L('EB 11'); L(INC(0x0E)); L(INC(0x0E));
 L(SET(0x45, 0x6F)); L(CH(0xE0)); L(SET(0x45, 0x75)); L(CH(0xE0));
@@ -1571,18 +1530,6 @@ L(SET(0x45, 0x2E)); L(CH(0xE0)); L(SET(0x45, 0x65)); L(CH(0xE0));
 L(SET(0x45, 0x78)); L(CH(0xE0)); L(SET(0x45, 0x65)); L(CH(0xE0));
 L(SET(0x45, 0)); L(CH(0xE0));
 L(JMP(0x8B));
-B();
-
-C('H_8E: embed "output" for str_idx==2');
-L(H(0x8E));
-L('EB 0A'); L(INC(0x0E)); L(INC(0x0E));
-L(SET(0x45, 0x6F)); L(CH(0xE0));
-L(SET(0x45, 0x75)); L(CH(0xE0));
-L(SET(0x45, 0x74)); L(CH(0xE0));
-L(SET(0x45, 0x70)); L(CH(0xE0));
-L(SET(0x45, 0x75)); L(CH(0xE0));
-L(SET(0x45, 0x74)); L(CH(0xE0));
-L(SET(0x45, 0)); L(CH(0xE0));
 B();
 
 C('H_8A: embed "input.ky"');
@@ -1599,16 +1546,11 @@ C('H_8B: emit LEA rcx + CreateFileA for WRITE');
 L(H(0x8B));
 L(SET(0x45, 0x48)); L(CH(0xE0)); L(SET(0x45, 0x8D)); L(CH(0xE0)); L(SET(0x45, 0x0D)); L(CH(0xE0));
 L(SET(0x41, 0)); L(CMP(0x51, 0x41)); L(JE(0x8C) + '  ; str_idx==0 -> disp=-17');
-L(SET(0x41, 2)); L(CMP(0x51, 0x41)); L(JE(0x8F) + '  ; str_idx==2 -> disp=-15');
 L(SET(0x4D, 0xFFEC)); L(CH(0xE5));  // disp = -20 for output.exe
 L(JMP(0x8D));
 B();
 L(H(0x8C));
 L(SET(0x4D, 0xFFEF)); L(CH(0xE5));  // disp = -17
-L(JMP(0x8D));
-B();
-L(H(0x8F));
-L(SET(0x4D, 0xFFF1)); L(CH(0xE5));  // disp = -15 for output
 B();
 L(H(0x8D));
 C('mov rdx, 0x40000000 (GENERIC_WRITE)');
@@ -1653,7 +1595,9 @@ L(CH(0xE5));
 L(RET());
 B();
 
-appendLinuxEmitHandlers(L);
+} // !isLinux
+
+if (isLinux) appendLinuxEmitHandlers(L);
 
 // ════════════════════════════════════════════════════════════════════════════════
 // FIXUP RESOLVER (H_63/H_64/H_65)
@@ -1726,5 +1670,5 @@ B();
 const outPath = path.join(__dirname, '..', 'projects', 'yoyo.ty');
 const content = lines.join('\n');
 fs.writeFileSync(outPath, content);
-console.log('Written ' + outPath);
+console.log('Written ' + outPath + ' [' + target + ']');
 console.log('  ' + lines.length + ' lines, ' + content.length + ' bytes');

@@ -78,11 +78,9 @@ function compileWin(src){
   E.mov_rr(code,R15,RAX);
   E.mov_ri(code,RCX,-11n);ci('KERNEL32.dll.GetStdHandle');
   E.mov_rr(code,R14,RAX);
-  stSet(STATE_TARGET,0);
-
   for(const op of prog.top)emit(op);
   E.xor_rr(code,RCX,RCX);ci('KERNEL32.dll.ExitProcess');
-  for(const h of Object.keys(prog.handlers)){
+  for(const h of Object.keys(prog.handlers).map(k=>+k).sort((a,b)=>a-b)){
     code.label('H'+h);for(const op of prog.handlers[h])emit(op);E.ret(code);
   }
   while(code.tell()<TEXT_VS)code.u8(0x90);
@@ -203,9 +201,14 @@ function compileLinux(src){
   const STARTUP_MAX=128;
   while(code.tell()<STARTUP_MAX)code.u8(0x90);
 
+  function emitExitAligned() {
+    code.u8(0x48); code.u8(0x83); code.u8(0xe4); code.u8(0xf0);
+    linux.emitExit();
+  }
+
   for(const op of prog.top)emitLinux(op);
-  linux.emitExit();
-  for(const h of Object.keys(prog.handlers)){
+  emitExitAligned();
+  for(const h of Object.keys(prog.handlers).map(k=>+k).sort((a,b)=>a-b)){
     code.label('H'+h);for(const op of prog.handlers[h])emitLinux(op);E.ret(code);
   }
   while(code.tell()<TEXT_VS)code.u8(0x90);
