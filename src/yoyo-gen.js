@@ -4,8 +4,9 @@ const path = require('path');
 const E    = require('./encode-x64.js');
 const { PE } = require('./pe-builder.js');
 const { ELF, BASE } = require('./elf-builder.js');
-const { STATE_TARGET } = require('./platform-config.js');
+const { STATE_TARGET, ELF_TEXT_FILE_OFF, PE_TEXT_FILE_OFF } = require('./platform-config.js');
 const { buildLinuxOutputStartup } = require('./linux-runtime.js');
+const { appendLinuxEmitHandlers } = require('./linux-self-emit.js');
 
 // ─── Fixed layout constants ───────────────────────────────────────────────────
 const FUNCS      = ['ExitProcess','GetStdHandle','WriteFile','ReadFile',
@@ -160,9 +161,18 @@ B();
 L(H(0xC2));
 
 C('=== H_30 emitter initialization ===');
-C('Setup write base: state_03 = output_buf + 0x400 (= .text file offset)');
+C('Setup write_base: output_buf + PE(0x400) or ELF(0x1000) .text file offset');
 L(GET(0x03, 0x02));
-L(ADD(0x03, 0x400));
+L(CMP(0xFB, 0));
+L(JNE(0xC8) + ' ; linux -> H_C8');
+L(ADD(0x03, PE_TEXT_FILE_OFF));
+L(JMP(0xC9) + ' ; -> H_C9');
+B();
+L(H(0xC8));
+L(ADD(0x03, ELF_TEXT_FILE_OFF));
+L(JMP(0xC9) + ' ; -> H_C9');
+B();
+L(H(0xC9));
 
 C('Allocate handler offset table (256 entries x4 bytes = 1024) -> state_04');
 L('20 04 400');
@@ -194,6 +204,10 @@ B();
 
 L(H(0xC3));
 C('Run scanner -> emitter');
+L('50 0A 00');
+L(GET(0x0C, 0x0A));
+L(GET(0x0D, 0x0B));
+L(ADDV(0x0D, 0x0C));
 L(CH(1)  + ' ; call H_01 main scan loop');
 C('Set total file size and write output (branch on state_FB)');
 L(CMP(0xFB, 0));
@@ -222,7 +236,7 @@ C('============================================================');
 C('H_01: Main loop - read byte and dispatch by scanner state');
 L(H(0x01));
 L(CMP(0x0C, 0x0D));
-L(JAE(0x1E) + '  ; EOF -> H_1E');
+L(JAE(0xCC) + '  ; EOF -> H_CC (call finalizer, return to H_C3)');
 L(LDB(0x0F, 0x0C, 0) + ' ; read byte -> state_0F');
 L(INC(0x0C)  + ' ; advance read ptr');
 C('Dispatch by scanner state (state_10)');
@@ -505,9 +519,10 @@ L(CH(0x77) + '  ; opcode 0x84: emit memcpy');
 L(JMP(0x4C));
 B();
 
-C('H_5A: opcode 0x20 - emit VirtualAlloc call');
+C('H_5A: opcode 0x20 - emit VirtualAlloc / mmap');
 L(H(0x5A));
 L(SET(0x41, 0x20)); L(CMP(0x40, 0x41)); L(JNE(0x5B));
+L(CMP(0xFB, 0)); L(JNE(0xD0) + '  ; linux -> H_D0');
 L(CH(0x60) + '  ; opcode 0x20: emit VirtualAlloc');
 L(JMP(0x4C));
 B();
@@ -515,6 +530,7 @@ B();
 C('H_5B: opcode 0x50 - emit LoadFile');
 L(H(0x5B));
 L(SET(0x41, 0x50)); L(CMP(0x40, 0x41)); L(JNE(0x5C));
+L(CMP(0xFB, 0)); L(JNE(0xD1) + '  ; linux -> H_D1');
 L(CH(0x61) + '  ; opcode 0x50: emit LoadFile');
 L(JMP(0x4C));
 B();
@@ -522,6 +538,7 @@ B();
 C('H_5C: opcode 0x51 - emit WriteFile');
 L(H(0x5C));
 L(SET(0x41, 0x51)); L(CMP(0x40, 0x41)); L(JNE(0x4C));
+L(CMP(0xFB, 0)); L(JNE(0xD2) + '  ; linux -> H_D2');
 L(CH(0x62) + '  ; opcode 0x51: emit WriteFile');
 L(JMP(0x4C));
 B();
@@ -538,7 +555,7 @@ B();
 // ── Comment handler ───────────────────────────────────────────────────────────
 C('H_25: comment - skip to end of line');
 L(H(0x25));
-L(CMP(0x0C, 0x0D)); L(JAE(0x1E) + '  ; EOF -> H_1E');
+L(CMP(0x0C, 0x0D)); L(JAE(0xCC) + '  ; EOF -> H_CC');
 L(LDB(0x0F, 0x0C, 0)); L(INC(0x0C));
 L(SET(0x41, 0x0A)); L(CMP(0x0F, 0x41)); L(JE(0x2A) + '  ; LF -> end comment');
 L(SET(0x41, 0x0D)); L(CMP(0x0F, 0x41)); L(JE(0x2A) + '  ; CR -> end comment');
@@ -603,7 +620,19 @@ L(SET(0x45, 0xC3));
 L(CH(0xE0) + '  ; emit 0xC3 (RET) as auto-ret for last handler');
 L(SET(0x45, 0xCC)); L(CH(0xE0) + '  ; SENTINEL INT3 before fixup');
 L(CH(0x63) + '  ; resolve all forward-jump fixups');
-L(RET() + '      ; return to main ops -> 51 write, then ExitProcess');
+L(RET() + '      ; return to H_CB');
+B();
+
+C('H_CB: EOF finalizer (called from H_CC)');
+L(H(0xCB));
+L(CH(0x1E) + '  ; call H_1E');
+L(RET() + '      ; return to H_CC');
+B();
+
+C('H_CC: EOF trampoline - call H_CB then return to H_C3');
+L(H(0xCC));
+L(CH(0xCB) + '  ; call H_CB');
+L(RET() + '      ; return to H_C3 after scan');
 B();
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -1315,6 +1344,7 @@ B();
 //        call [rip + VAlloc_IAT]; stPut(id,rax)
 C('H_60: opcode 0x20 id sz - emit VirtualAlloc(state[id]=VirtualAlloc(0,sz,0x3000,0x40))');
 L(H(0x60));
+L(CMP(0xFB, 0)); L(JNE(0xD0) + '  ; linux -> H_D0');
 C('xor rcx, rcx');
 L(SET(0x45, 0x48)); L(CH(0xE0));   // 48 31 C9
 L(SET(0x45, 0x31)); L(CH(0xE0));
@@ -1399,6 +1429,7 @@ B();
 // Embed filename inline using jmp-over + LEA trick, then CreateFileA + GetFileSize + VirtualAlloc + ReadFile + CloseHandle
 C('H_61: opcode 0x50 id str_idx - emit LoadFile');
 L(H(0x61));
+L(CMP(0xFB, 0)); L(JNE(0xD1) + '  ; linux -> H_D1');
 C('Embed filename: check if str_idx==0 ("input.ky") or str_idx==1 ("output.exe")');
 C('Use jmp-over-filename trick for both cases');
 L(SET(0x41, 0)); L(CMP(0x51, 0x41)); L(JE(0x86) + '  ; str_idx==0 -> "input.ky"');
@@ -1527,8 +1558,10 @@ B();
 // ── H_62: opcode 0x51 id str_idx sz - emit WriteFile ──────────────────────────
 C('H_62: opcode 0x51 id str_idx sz - emit WriteFile');
 L(H(0x62));
+L(CMP(0xFB, 0)); L(JNE(0xD2) + '  ; linux -> H_D2');
 C('Embed filename (same as LoadFile)');
 L(SET(0x41, 0)); L(CMP(0x51, 0x41)); L(JE(0x8A) + '  ; str_idx==0 -> "input.ky"');
+L(SET(0x41, 2)); L(CMP(0x51, 0x41)); L(JE(0x8E) + '  ; str_idx==2 -> "output"');
 C('str_idx==1: embed "output.exe"');
 L('EB 11'); L(INC(0x0E)); L(INC(0x0E));
 L(SET(0x45, 0x6F)); L(CH(0xE0)); L(SET(0x45, 0x75)); L(CH(0xE0));
@@ -1538,6 +1571,18 @@ L(SET(0x45, 0x2E)); L(CH(0xE0)); L(SET(0x45, 0x65)); L(CH(0xE0));
 L(SET(0x45, 0x78)); L(CH(0xE0)); L(SET(0x45, 0x65)); L(CH(0xE0));
 L(SET(0x45, 0)); L(CH(0xE0));
 L(JMP(0x8B));
+B();
+
+C('H_8E: embed "output" for str_idx==2');
+L(H(0x8E));
+L('EB 0A'); L(INC(0x0E)); L(INC(0x0E));
+L(SET(0x45, 0x6F)); L(CH(0xE0));
+L(SET(0x45, 0x75)); L(CH(0xE0));
+L(SET(0x45, 0x74)); L(CH(0xE0));
+L(SET(0x45, 0x70)); L(CH(0xE0));
+L(SET(0x45, 0x75)); L(CH(0xE0));
+L(SET(0x45, 0x74)); L(CH(0xE0));
+L(SET(0x45, 0)); L(CH(0xE0));
 B();
 
 C('H_8A: embed "input.ky"');
@@ -1554,11 +1599,16 @@ C('H_8B: emit LEA rcx + CreateFileA for WRITE');
 L(H(0x8B));
 L(SET(0x45, 0x48)); L(CH(0xE0)); L(SET(0x45, 0x8D)); L(CH(0xE0)); L(SET(0x45, 0x0D)); L(CH(0xE0));
 L(SET(0x41, 0)); L(CMP(0x51, 0x41)); L(JE(0x8C) + '  ; str_idx==0 -> disp=-17');
-L(SET(0x4D, 0xFFEC)); L(CH(0xE5));  // disp = -20
+L(SET(0x41, 2)); L(CMP(0x51, 0x41)); L(JE(0x8F) + '  ; str_idx==2 -> disp=-15');
+L(SET(0x4D, 0xFFEC)); L(CH(0xE5));  // disp = -20 for output.exe
 L(JMP(0x8D));
 B();
 L(H(0x8C));
 L(SET(0x4D, 0xFFEF)); L(CH(0xE5));  // disp = -17
+L(JMP(0x8D));
+B();
+L(H(0x8F));
+L(SET(0x4D, 0xFFF1)); L(CH(0xE5));  // disp = -15 for output
 B();
 L(H(0x8D));
 C('mov rdx, 0x40000000 (GENERIC_WRITE)');
@@ -1602,6 +1652,8 @@ L(SET(0x4D, 0x402C)); L(SUBV(0x4D, 0x0E) + '  ; disp = 0x402C - state_0E');
 L(CH(0xE5));
 L(RET());
 B();
+
+appendLinuxEmitHandlers(L);
 
 // ════════════════════════════════════════════════════════════════════════════════
 // FIXUP RESOLVER (H_63/H_64/H_65)

@@ -201,7 +201,7 @@ function compileLinux(src){
 
   const linux=makeLinuxEmit(code,dr,strs,strPos);
   const STARTUP_MAX=128;
-  code.off=STARTUP_MAX;
+  while(code.tell()<STARTUP_MAX)code.u8(0x90);
 
   for(const op of prog.top)emitLinux(op);
   linux.emitExit();

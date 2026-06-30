@@ -32,6 +32,10 @@ run_gen() {
     echo "[!] $label timeout"
     exit 1
   fi
+  if [[ $code -ne 0 ]]; then
+    echo "[!] $label: compiler exited with code $code"
+    exit 1
+  fi
   if [[ ! -f "$ROOT_DIR/output" ]]; then
     echo "[!] $label: output not found (exit=$code)"
     exit 1

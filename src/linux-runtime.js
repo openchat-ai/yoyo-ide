@@ -1,7 +1,7 @@
 'use strict';
 
 const E = require('./encode-x64.js');
-const { STATE_TARGET, STATE_BUF_OFF, LINUX_SYSCALL, O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC } = require('./platform-config.js');
+const { STATE_TARGET, STATE_BUF_OFF, OUTPUT_STATE_BUF_OFF, LINUX_SYSCALL, O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC } = require('./platform-config.js');
 const { BASE } = require('./elf-builder.js');
 const CODE_RVA = BASE + 0x1000;
 
@@ -25,7 +25,16 @@ function buildLinuxStartup(dataRva, continueOff) {
 }
 
 function buildLinuxOutputStartup(dataRva) {
-  return buildLinuxStartup(dataRva);
+  const b = new E.Buf();
+  const leaState = b.tell();
+  E.lea_rip(b, R15, dataRva + OUTPUT_STATE_BUF_OFF - (CODE_RVA + leaState + 7));
+  const leaData = b.tell();
+  E.lea_rip(b, RAX, dataRva - (CODE_RVA + leaData + 7));
+  E.mov_mr64(b, R15, 8 * 8, RAX);
+  E.mov_ri(b, R14, 1n);
+  E.mov_ri(b, RAX, 1n);
+  E.mov_mr64(b, R15, STATE_TARGET * 8, RAX);
+  return b.b.slice(0, b.tell());
 }
 
 function makeLinuxEmit(code, dr, strs, strPos) {

@@ -5,6 +5,9 @@ const CODE_RVA = 0x1000;
 const DATA_RVA = CODE_RVA + TEXT_VS;
 const STATE_TARGET = 0xfb;
 const STATE_BUF_OFF = 0x8000;
+const OUTPUT_STATE_BUF_OFF = 0x1000;
+const ELF_TEXT_FILE_OFF = 0x1000;
+const PE_TEXT_FILE_OFF = 0x400;
 
 const WIN_FUNCS = [
   'ExitProcess', 'GetStdHandle', 'WriteFile', 'ReadFile',
@@ -31,6 +34,9 @@ module.exports = {
   DATA_RVA,
   STATE_TARGET,
   STATE_BUF_OFF,
+  OUTPUT_STATE_BUF_OFF,
+  ELF_TEXT_FILE_OFF,
+  PE_TEXT_FILE_OFF,
   WIN_FUNCS,
   LINUX_SYSCALL,
   O_RDONLY,
