@@ -7,6 +7,7 @@ const { ELF, BASE } = require('./elf-builder.js');
 const { STATE_TARGET, ELF_TEXT_FILE_OFF, PE_TEXT_FILE_OFF } = require('./platform-config.js');
 const { buildLinuxOutputStartup } = require('./linux-runtime.js');
 const { appendLinuxEmitHandlers } = require('./linux-self-emit.js');
+const { blobHandlers } = require('./blob-handlers.js');
 
 function parseTarget(argv) {
   for (let i = 0; i < argv.length; i++) {
@@ -230,6 +231,8 @@ L(GET(0x4C, 0x03));
 L('84 4C ' + hx(STARTUP_BLOB_OFF, 4) + ' ' + hx(outputStartup.length, 2));
 L(ADD(0x0E, outputStartup.length));
 
+const HANDLER_MAP_OFF = 0xFE00;
+
 C('Run scanner -> emitter');
 L('50 0A 00');
 L(GET(0x0C, 0x0A));
@@ -237,6 +240,17 @@ L(GET(0x0D, 0x0B));
 L(ADDV(0x0D, 0x0C));
 L(SET(0x09, 1) + ' ; suppress H_31 first-handler exit prologue during scan');
 L(CH(1)  + ' ; call H_01 main scan loop');
+
+C('Snapshot handler offset table + final code_offset into output data (blob extraction)');
+L(GET(0x47, 0x04));
+L(GET(0x48, 0x08));
+L(ADD(0x48, HANDLER_MAP_OFF));
+L(SET(0x53, 0x400));
+L('85 48 47 53');
+L(GET(0x48, 0x08));
+L(ADD(0x48, HANDLER_MAP_OFF + 0x400));
+L(GET(0x47, 0x0E));
+L('55 48 47');
 
 C('Patch embedded blobs into output ELF data section (bootstrap self-hosting)');
 L(GET(0x47, 0x02));
@@ -320,6 +334,7 @@ L(SET(0x41, 2)); L(CMP(0x40, 0x41)); L(JE(0x22) + ' ; state 2 -> H_22');
 L(SET(0x41, 3)); L(CMP(0x40, 0x41)); L(JE(0x23) + ' ; state 3 -> H_23');
 L(SET(0x41, 4)); L(CMP(0x40, 0x41)); L(JE(0x24) + ' ; state 4 -> H_24');
 L(SET(0x41, 5)); L(CMP(0x40, 0x41)); L(JE(0x25) + ' ; state 5 -> H_25');
+L(SET(0x41, 6)); L(CMP(0x40, 0x41)); L(JE(0xB1) + ' ; state 6 -> H_B1 (A0 hex emit)');
 L(SET(0x10, 0) + ' ; unknown state, reset');
 L(JMP(0x01));
 B();
@@ -372,6 +387,8 @@ C('Opcode 0x13 blob lines: skip rest of line (hex embedded at compile time)');
 L(SET(0x41, 0x13)); L(CMP(0x13, 0x41)); L(JE(0x14) + ' ; -> H_14 skip line');
 C('Opcode 0x12 string defs: skip rest of line (embedded at compile time)');
 L(SET(0x41, 0x12)); L(CMP(0x13, 0x41)); L(JE(0x14) + ' ; -> H_14 skip line');
+C('Opcode 0xA0 raw hex: inline emit bytes from rest of line');
+L(SET(0x41, 0xA0)); L(CMP(0x13, 0x41)); L(JE(0xB0) + ' ; -> H_B0 A0 mode');
 C('LF/CR/; -> emit immediately (no args)');
 L(SET(0x41, 0x0A)); L(CMP(0x0F, 0x41)); L(JE(0x30) + ' ; LF -> emit');
 L(SET(0x41, 0x0D)); L(CMP(0x0F, 0x41)); L(JE(0x30) + ' ; CR -> emit');
@@ -682,6 +699,45 @@ L(H(0x2B));
 L(SET(0x41, 0)); L(CMP(0x14, 0x41)); L(JE(0x2E) + ' ; arg_index==0 -> H_2E');
 L(SET(0x41, 1)); L(CMP(0x14, 0x41)); L(JE(0x2C) + ' ; arg_index==1 -> H_2C');
 L(JMP(0x2D));
+B();
+
+C('H_B0: enter A0 inline hex emit mode (state 6)');
+L(H(0xB0));
+L(SET(0x10, 6) + ' ; state = 6');
+L(SET(0x11, 0));
+L(SET(0x12, 0));
+L(JMP(0x01));
+B();
+
+C('H_B1: state 6 - read hex nibbles, emit each complete byte via H_E0');
+L(H(0xB1));
+L(CMP(0x0C, 0x0D));
+L(JAE(0xB2) + '  ; EOF -> finish A0 line');
+L(LDB(0x0F, 0x0C, 0) + ' ; read byte');
+L(INC(0x0C));
+L(SET(0x41, 0x0A)); L(CMP(0x0F, 0x41)); L(JE(0xB2) + '  ; LF -> done');
+L(SET(0x41, 0x0D)); L(CMP(0x0F, 0x41)); L(JE(0xB2) + '  ; CR -> done');
+L(SET(0x41, 0x3B)); L(CMP(0x0F, 0x41)); L(JE(0xB2) + '  ; ; -> done');
+L(SET(0x41, 0x20)); L(CMP(0x0F, 0x41)); L(JE(0x01) + '  ; space -> skip');
+L(SET(0x41, 0x09)); L(CMP(0x0F, 0x41)); L(JE(0x01) + '  ; tab -> skip');
+L(SET(0x41, 0x30)); L(CMP(0x0F, 0x41)); L(JB(0x01) + '  ; non-hex -> skip');
+L(SET(0x41, 0x66)); L(CMP(0x0F, 0x41)); L(JA(0x01) + '  ; non-hex -> skip');
+L(CH(0x0C) + '  ; accumulate nibble');
+L(SET(0x41, 2)); L(CMP(0x12, 0x41)); L(JNE(0x01) + '  ; wait for 2 nibbles');
+L(GET(0x45, 0x11));
+L(CH(0xE0) + '  ; emit byte');
+L(SET(0x11, 0));
+L(SET(0x12, 0));
+L(JMP(0x01));
+B();
+
+C('H_B2: end of A0 line - reset scanner state');
+L(H(0xB2));
+L(SET(0x10, 0));
+L(SET(0x11, 0));
+L(SET(0x12, 0));
+L(SET(0x14, 0));
+L(JMP(0x01));
 B();
 
 // ── H_0C/H_0D: hex digit converter + nibble accumulator ──────────────────────
@@ -1948,7 +2004,10 @@ B();
 // Write output file
 // ════════════════════════════════════════════════════════════════════════════════
 const outPath = path.join(__dirname, '..', 'projects', 'yoyo.ty');
-const content = lines.join('\n');
+let content = lines.join('\n');
+if (isLinux && process.env.YOYO_BLOB === '1') {
+  content = blobHandlers(content, path.join(__dirname, '..'));
+}
 fs.writeFileSync(outPath, content);
 console.log('Written ' + outPath + ' [' + target + ']');
 console.log('  ' + lines.length + ' lines, ' + content.length + ' bytes');

@@ -62,6 +62,16 @@
 68 0d 0c
 30 09 01 ; suppress H_31 first-handler exit prologue during scan
 41 01 ; call H_01 main scan loop
+; Snapshot handler offset table + final code_offset into output data (blob extraction)
+60 47 04
+60 48 08
+61 48 fe00
+30 53 400
+85 48 47 53
+60 48 08
+61 48 10200
+60 47 0e
+55 48 47
 ; Patch embedded blobs into output ELF data section (bootstrap self-hosting)
 60 47 02
 61 47 d000
@@ -128,6 +138,9 @@
 30 41 05
 65 40 41
 71 25 ; state 5 -> H_25
+30 41 06
+65 40 41
+71 b1 ; state 6 -> H_B1 (A0 hex emit)
 30 10 00 ; unknown state, reset
 70 01
 
@@ -200,6 +213,10 @@
 30 41 12
 65 13 41
 71 14 ; -> H_14 skip line
+; Opcode 0xA0 raw hex: inline emit bytes from rest of line
+30 41 a0
+65 13 41
+71 b0 ; -> H_B0 A0 mode
 ; LF/CR/; -> emit immediately (no args)
 30 41 0a
 65 0f 41
@@ -567,6 +584,58 @@
 65 14 41
 71 2c ; arg_index==1 -> H_2C
 70 2d
+
+; H_B0: enter A0 inline hex emit mode (state 6)
+40 b0
+30 10 06 ; state = 6
+30 11 00
+30 12 00
+70 01
+
+; H_B1: state 6 - read hex nibbles, emit each complete byte via H_E0
+40 b1
+65 0c 0d
+78 b2  ; EOF -> finish A0 line
+80 0f 0c 00 ; read byte
+66 0c
+30 41 0a
+65 0f 41
+71 b2  ; LF -> done
+30 41 0d
+65 0f 41
+71 b2  ; CR -> done
+30 41 3b
+65 0f 41
+71 b2  ; ; -> done
+30 41 20
+65 0f 41
+71 01  ; space -> skip
+30 41 09
+65 0f 41
+71 01  ; tab -> skip
+30 41 30
+65 0f 41
+77 01  ; non-hex -> skip
+30 41 66
+65 0f 41
+7A 01  ; non-hex -> skip
+41 0c  ; accumulate nibble
+30 41 02
+65 12 41
+72 01  ; wait for 2 nibbles
+60 45 11
+41 e0  ; emit byte
+30 11 00
+30 12 00
+70 01
+
+; H_B2: end of A0 line - reset scanner state
+40 b2
+30 10 00
+30 11 00
+30 12 00
+30 14 00
+70 01
 
 ; H_0C: convert hex char in state_0F to nibble, accumulate into state_11
 40 0c
