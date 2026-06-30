@@ -46,6 +46,8 @@
 20 05 400
 ; Allocate fixup patch-position array -> state_06
 20 06 400
+; Allocate defined-handler bitmap (256 bytes, mmap-zeroed) -> state_15
+20 15 100
 ; Initialize emitter state: fixup_count=0, first_handler_flag=0
 30 07 00 ; fixup_count = 0
 30 09 00 ; first_handler_flag = 0
@@ -700,25 +702,85 @@ FF
 61 0e 04
 FF
 
-; H_E7: state_4D = handler_table[state_50]  (reads 2-byte entry from table)
+; H_F9: state_4D = u32-LE at [state_48]
+40 f9
+80 49 48 00 ; b0
+80 4a 48 01 ; b1
+80 4b 48 02 ; b2
+80 4c 48 03 ; b3
+60 4d 49   ; acc = b0
+60 42 4a
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 4d 42
+60 42 4b
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 4d 42
+60 42 4c
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 4d 42
+FF
+
+; H_F7: state_49 = defined[state_50]
+40 f7
+60 47 50
+60 48 15
+68 48 47  ; defined_base + hh
+80 49 48 00
+FF
+
+; H_E7: state_4D = handler_table[state_50]  (u32 entry)
 40 e7
 60 47 50
 68 47 47
 68 47 47
 60 48 04
 68 48 47  ; state_48 = table_base + hh*4
-80 49 48 00 ; byte0
-80 4a 48 01 ; byte1
-68 4a 4a
-68 4a 4a
-68 4a 4a
-68 4a 4a
-68 4a 4a
-68 4a 4a
-68 4a 4a
-68 4a 4a
-68 49 4a
-60 4d 49   ; state_4D = offset = byte0 + byte1*256
+41 f9           ; state_4D = handler_table[hh]
 FF
 
 ; H_E6: record fixup: hh=state_50, patch_pos=state_0E, count=state_07
@@ -886,6 +948,12 @@ FF
 60 48 04
 68 48 47  ; table_base + hh*4
 55 48 0E        ; handler_table[hh] = state_0E
+; Mark handler hh as defined
+60 47 50
+60 48 15
+68 48 47  ; defined_base + hh
+30 45 01
+87 48 45        ; defined[hh] = 1
 FF
 
 ; H_32: opcode 0xFF - emit C3 (ret)
@@ -966,21 +1034,21 @@ FF
 
 ; H_36: opcode 0x70 hh - emit JMP rel32 (E9 disp32)
 40 36
-41 e7  ; state_4D = handler_table[state_50]
-; If handler_table[hh]==0 it's a forward jump (handler not yet defined)
+41 f7  ; state_49 = defined[state_50]
+; If !defined[hh] it's a forward jump (handler not yet seen in scan)
 30 41 00
-65 4d 41
+65 49 41
 71 42  ; forward -> H_42
+41 e7  ; backward: state_4D = handler_table[state_50]
 ; Backward jump: compute rel32 = target - (state_0E + 5)
 30 45 e9
 41 e0
 ; state_4E = state_0E + 4  (end of instruction after disp32)
 60 4e 0e
 61 4e 04
+65 4d 4e  ; target==end -> H_FC (avoid rel32=0 backward)
+71 fc
 69 4d 4e  ; rel32 = target - end
-30 41 00
-65 4d 41
-71 fc  ; rel32==0 -> record fixup
 41 e5
 FF
 
@@ -1020,18 +1088,18 @@ FF
 30 41 00
 65 50 41
 71 36  ; hh==0 -> H_36 emit JMP
-41 e7
+41 f7
 30 41 00
-65 4d 41
+65 49 41
 71 43
+41 e7
 30 45 e8
 41 e0
 60 4e 0e
 61 4e 04
+65 4d 4e  ; target==end -> H_FC
+71 fc
 69 4d 4e
-30 41 00
-65 4d 41
-71 fc  ; rel32==0 -> record fixup
 41 e5
 FF
 
@@ -1053,16 +1121,19 @@ FF
 
 ; H_38: opcode 0x71 hh - emit JE rel32 (0F 84 disp32)
 40 38
-41 e7
+41 f7
 30 41 00
-65 4d 41
+65 49 41
 71 44
+41 e7
 30 45 0f
 41 e0
 30 45 84
 41 e0
 60 4e 0e
 61 4e 04
+65 4d 4e  ; target==end -> H_FC
+71 fc
 69 4d 4e
 41 e5
 FF
@@ -1087,16 +1158,19 @@ FF
 
 ; H_9C: generic jcc rel32 emitter (state_F0 = x86 cond byte, 0x84/0x85/0x8C/0x8D/0x8E/0x8F/...)
 40 9c
-41 e7
+41 f7
 30 41 00
-65 4d 41
+65 49 41
 71 9d
+41 e7
 30 45 0f
 41 e0
 60 45 f0
 41 e0
 60 4e 0e
 61 4e 04
+65 4d 4e  ; target==end -> H_FC
+71 fc
 69 4d 4e
 41 e5
 FF
@@ -1358,16 +1432,19 @@ FF
 
 ; H_78: opcode 0x72 hh - emit JNE rel32
 40 78
-41 e7
+41 f7
 30 41 00
-65 4d 41
+65 49 41
 71 7d
+41 e7
 30 45 0f
 41 e0
 30 45 85
 41 e0
 60 4e 0e
 61 4e 04
+65 4d 4e  ; target==end -> H_FC
+71 fc
 69 4d 4e
 41 e5
 FF
@@ -1392,16 +1469,19 @@ FF
 
 ; H_79: opcode 0x75 hh - emit JBE rel32
 40 79
-41 e7
+41 f7
 30 41 00
-65 4d 41
+65 49 41
 71 7e
+41 e7
 30 45 0f
 41 e0
 30 45 86
 41 e0
 60 4e 0e
 61 4e 04
+65 4d 4e  ; target==end -> H_FC
+71 fc
 69 4d 4e
 41 e5
 FF
@@ -1426,16 +1506,19 @@ FF
 
 ; H_7A: opcode 0x77 hh - emit JB rel32
 40 7a
-41 e7
+41 f7
 30 41 00
-65 4d 41
+65 49 41
 71 7f
+41 e7
 30 45 0f
 41 e0
 30 45 82
 41 e0
 60 4e 0e
 61 4e 04
+65 4d 4e  ; target==end -> H_FC
+71 fc
 69 4d 4e
 41 e5
 FF
@@ -1460,16 +1543,19 @@ FF
 
 ; H_7B: opcode 0x78 hh - emit JAE rel32
 40 7b
-41 e7
+41 f7
 30 41 00
-65 4d 41
+65 49 41
 71 80
+41 e7
 30 45 0f
 41 e0
 30 45 83
 41 e0
 60 4e 0e
 61 4e 04
+65 4d 4e  ; target==end -> H_FC
+71 fc
 69 4d 4e
 41 e5
 FF
@@ -1494,16 +1580,19 @@ FF
 
 ; H_7C: opcode 0x7A hh - emit JA rel32
 40 7c
-41 e7
+41 f7
 30 41 00
-65 4d 41
+65 49 41
 71 81
+41 e7
 30 45 0f
 41 e0
 30 45 87
 41 e0
 60 4e 0e
 61 4e 04
+65 4d 4e  ; target==end -> H_FC
+71 fc
 69 4d 4e
 41 e5
 FF
@@ -2252,20 +2341,69 @@ FF
 60 48 47
 68 48 48
 68 48 48 ; state_48 = i*4 (recomputed)
-; Read patch_pos from fixup_pos[i]
+; Read patch_pos u32 from fixup_pos[i] into state_4A (keep state_4D=target)
 60 49 06
 68 49 48  ; state_49 = pos_base + i*4
-80 4a 49 00
-80 4b 49 01
-68 4b 4b
-68 4b 4b
-68 4b 4b
-68 4b 4b
-68 4b 4b
-68 4b 4b
-68 4b 4b
-68 4b 4b
-68 4a 4b  ; patch_pos
+60 48 49  ; state_48 = &fixup_pos[i]
+80 49 48 00 ; b0
+80 4a 48 01 ; b1
+80 4b 48 02 ; b2
+80 4c 48 03 ; b3
+60 4a 49   ; acc = b0
+60 42 4a
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 4a 42
+60 42 4b
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 4a 42
+60 42 4c
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 4a 42
 ; Skip fixups in startup blob (already final); state_0A = startup length
 30 0a 1c
 65 4a 0a
