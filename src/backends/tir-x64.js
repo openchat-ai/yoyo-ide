@@ -1,10 +1,11 @@
 'use strict';
 
 /**
- * TIR → x64 backend skeleton (Phase 2).
- * Emits nothing yet; validates module and reports codegen readiness.
+ * TIR → x64 backend (Phase 2 — partial).
+ * Lowers verified TIR to ELF via tir-emit-linux.js.
  */
 const { verifyModule } = require('../tir/verify.js');
+const { emitModule } = require('./tir-emit-linux.js');
 
 function compile(_src, opts, mod) {
   const v = verifyModule(mod);
@@ -13,9 +14,8 @@ function compile(_src, opts, mod) {
   }
   if (opts && opts.verbose) {
     console.error('[tir-x64] handlers:', mod.meta?.handlerCount, 'fixups:', mod.meta?.fixupCount);
-    console.error('[tir-x64] codegen not implemented — use --backend=x64 for ELF output');
   }
-  throw new Error('backend tir-x64: codegen not implemented (Phase 2). Use --backend=x64');
+  return emitModule(mod, opts);
 }
 
 module.exports = { compile };

@@ -48,9 +48,27 @@ function parseSectionEnds(src) {
 function a1ByteLines(buf) {
   const lines = [];
   for (let i = 0; i < buf.length; i++) {
-    lines.push('a1 ' + buf[i].toString(16));
+    lines.push('a1 ' + buf[i].toString(16).padStart(2, '0'));
   }
   return lines;
+}
+
+/**
+ * Patch PC-relative rel32 in e8/e9/0f8x when relocating a slice from oldBase to newBase.
+ */
+function relocateSlice(buf, oldBase, newBase) {
+  const delta = newBase - oldBase;
+  const out = Buffer.from(buf);
+  for (let i = 0; i < out.length - 4; i++) {
+    if (out[i] === 0xe8 || out[i] === 0xe9) {
+      out.writeInt32LE(out.readInt32LE(i + 1) - delta, i + 1);
+      i += 4;
+    } else if (out[i] === 0x0f && out[i + 1] >= 0x80 && out[i + 1] <= 0x8f && i + 5 < out.length) {
+      out.writeInt32LE(out.readInt32LE(i + 2) - delta, i + 2);
+      i += 5;
+    }
+  }
+  return out;
 }
 
 function readHandlerLayout(elfPath) {
@@ -130,4 +148,4 @@ function blobHandlers(src, rootDir) {
   return out.join('\n');
 }
 
-module.exports = { blobHandlers, handlerFileOrder, readHandlerLayout, parseSectionEnds };
+module.exports = { blobHandlers, handlerFileOrder, readHandlerLayout, parseSectionEnds, relocateSlice, a1ByteLines };

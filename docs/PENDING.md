@@ -15,15 +15,29 @@ Items intentionally **not** blocking the aggressive evolution track (`docs/evolu
 | gen2 self-host (`gen2` → gen3) | **FAIL** — ~27k vs ~370 bytes of real `.text`; handler map empty in gen3 |
 | `cmp gen2 gen3` | ~27k differing bytes |
 
-### Root cause (confirmed)
+### Root cause (confirmed, 2026-06-30 deep dive)
 
-`projects/yoyo.ty` is **dual-purpose**: Node (`yoyo.js`) compiles it to gen1; gen1 **scan-emits** the same source into gen2. Those two paths are not required to agree on layout, but Stage 3 needs **gen2's emitted machine code to be a fixed point** when gen2 runs as compiler.
+`projects/yoyo.ty` is **dual-purpose**: Node (`yoyo.js`) compiles it to gen1; gen1 **scan-emits** the same source into gen2.
+
+| Artifact | Entry startup | `.text` handlers | Runs as compiler? |
+|----------|---------------|------------------|-------------------|
+| gen1 (`build/yoyo`) | `buildLinuxStartup` → state @ `STATE_BUF_OFF` | Node `compileLinux` | **Yes** |
+| gen2 (gen1 scan output) | `buildLinuxOutputStartup` → state @ `OUTPUT_STATE_BUF_OFF` | Scan-emitted | **No** — `codeEnd=30`, immediate EOF |
+
+gen1 compiling `yoyo.ty` → output with `codeEnd=27056` (44-byte data diff vs Node compile).  
+gen2 running on `yoyo.ty` → output with `codeEnd=30`, `table[1]=0` (scan never emits handlers).
+
+gen2's own `.text` is byte-identical to gen1's scan output (not to Node gen1 `.text`). The scan-emitted runtime path does not execute the scanner loop correctly — `read_ptr >= end_ptr` on first `H_01` iteration (LoadFile / pointer init failure in emitted `H_00`).
 
 Today:
 
 1. **Fixup overflow** — fixed (`20 05/06 1000`, native `H_FE`, `a1` meta-emit).
-2. **Scan-emitted handlers ≠ Node handlers** — gen2's in-image `H_01` / `H_30` / … execute incorrectly; gen3 `codeEnd ≈ 0x1e`, handler table all zero.
-3. **PC-relative handler blobs** — copying reference slices with `a0`/`a1` blobs breaks when relocated (SIGILL).
+2. **Scan-emitted handlers ≠ Node handlers** — gen2 `H_00`/`H_01` machine code differs; runtime scan broken.
+3. **PC-relative handler blobs** — `relocateSlice()` added in `blob-handlers.js`; full blob path still unstable.
+
+### Resolution strategy
+
+See `docs/evolution.md` — TIR single codegen path. `src/backends/tir-emit-linux.js` started (partial op lowering).
 
 ### What we tried
 
