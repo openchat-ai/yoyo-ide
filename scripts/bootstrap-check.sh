@@ -47,12 +47,12 @@ if [[ $UPDATE_BASELINE -eq 1 && $STRICT_MODE -ne 1 ]]; then
   exit 2
 fi
 
-echo "[1/4] 生成 yoyo.ty（第一次）"
-node src/yoyo-gen.js >/dev/null
+echo "[1/4] 生成 yoyo.ty（第一次, win）"
+node src/yoyo-gen.js --target=win >/dev/null
 cp projects/yoyo.ty "$TMP_DIR/yoyo-1.ty"
 
-echo "[2/4] 生成 yoyo.ty（第二次）"
-node src/yoyo-gen.js >/dev/null
+echo "[2/4] 生成 yoyo.ty（第二次, win）"
+node src/yoyo-gen.js --target=win >/dev/null
 cp projects/yoyo.ty "$TMP_DIR/yoyo-2.ty"
 
 echo "[3/4] 用同一源码编译两次"

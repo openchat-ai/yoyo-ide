@@ -50,7 +50,7 @@ echo "临时目录: $TMP_DIR"
 echo
 
 echo "[stage 1/5] 生成 yoyo.ty"
-node src/yoyo-gen.js >/dev/null
+node src/yoyo-gen.js --target=win >/dev/null
 echo "  yoyo.ty: $(wc -c < projects/yoyo.ty) bytes"
 
 echo "[stage 1/5] Node 主机编译 -> build/yoyo.exe (gen 1)"

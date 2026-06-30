@@ -5,11 +5,11 @@ Remove-Item -Recurse -Force "$TMP" -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path "$TMP" -Force | Out-Null
 
 Write-Host "[1/4] gen yoyo.ty (1)"
-& node "$ROOT\src\yoyo-gen.js" 2>&1 | Out-Null
+& node "$ROOT\src\yoyo-gen.js" --target=win 2>&1 | Out-Null
 Copy-Item "$ROOT\projects\yoyo.ty" "$TMP\y1.ty" -Force
 
 Write-Host "[2/4] gen yoyo.ty (2)"
-& node "$ROOT\src\yoyo-gen.js" 2>&1 | Out-Null
+& node "$ROOT\src\yoyo-gen.js" --target=win 2>&1 | Out-Null
 Copy-Item "$ROOT\projects\yoyo.ty" "$TMP\y2.ty" -Force
 
 Write-Host "[3/4] compile x2"
