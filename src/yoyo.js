@@ -47,6 +47,11 @@ function analyze(tokens){
 
 function compile(src,opts={}){
   const target=(opts.target||'win').toLowerCase();
+  const backend=(opts.backend||'x64').toLowerCase();
+  if(backend!=='x64'){
+    const {resolveBackend}=require('./backends/registry.js');
+    return resolveBackend(backend).compile(src,{...opts,target});
+  }
   return target==='linux'?compileLinux(src):compileWin(src);
 }
 
@@ -286,16 +291,19 @@ if(require.main===module){(async()=>{
   const fs=require('fs');
   const args=process.argv.slice(2);
   let target='win';
+  let backend='x64';
   const rest=[];
   for(let i=0;i<args.length;i++){
     if(args[i].startsWith('--target=')){target=args[i].slice(9).toLowerCase();}
     else if(args[i]==='--target'&&args[i+1]){target=args[i+1].toLowerCase();i++;}
+    else if(args[i].startsWith('--backend=')){backend=args[i].slice(10).toLowerCase();}
+    else if(args[i]==='--backend'&&args[i+1]){backend=args[i+1].toLowerCase();i++;}
     else rest.push(args[i]);
   }
   const ky=fs.readFileSync(rest[0],'utf8');
-  const exe=compile(ky,{target});
+  const exe=compile(ky,{target,backend});
   const out=rest[1]||rest[0].replace(/\.(ty|ky)$/,'')+(target==='linux'?'':'.exe');
   fs.writeFileSync(out,exe);
   fs.chmodSync(out,0o755);
-  console.log(`Compiled [${target}] to ${out} (${exe.length} bytes)`);
+  console.log(`Compiled [${target}/${backend}] to ${out} (${exe.length} bytes)`);
 })();}

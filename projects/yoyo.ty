@@ -978,7 +978,24 @@ FF
 60 4e 0e
 61 4e 04
 69 4d 4e  ; rel32 = target - end
+30 41 00
+65 4d 41
+71 fc  ; rel32==0 -> record fixup
 41 e5
+FF
+
+; H_FC: branch opcode already emitted — record forward fixup + zero placeholder
+40 fc
+41 e6  ; record fixup at rel32 field (state_0E)
+30 45 00
+57 03 0E 45
+66 0e
+57 03 0E 45
+66 0e
+57 03 0E 45
+66 0e
+57 03 0E 45
+66 0e
 FF
 
 ; H_42: forward JMP - emit E9, record fixup (rel32 pos), then placeholder
@@ -1012,6 +1029,9 @@ FF
 60 4e 0e
 61 4e 04
 69 4d 4e
+30 41 00
+65 4d 41
+71 fc  ; rel32==0 -> record fixup
 41 e5
 FF
 
@@ -2246,6 +2266,10 @@ FF
 68 4b 4b
 68 4b 4b
 68 4a 4b  ; patch_pos
+; Skip fixups in startup blob (already final); state_0A = startup length
+30 0a 1c
+65 4a 0a
+77 fd  ; patch_pos < startup_len -> skip
 ; rel32 = target - (patch_pos + 4)
 60 4e 4a
 61 4e 04  ; state_4E = patch_pos + 4
@@ -2253,10 +2277,13 @@ FF
 ; Write rel32 u32 at write_base + patch_pos
 60 4c 03
 68 4c 4a  ; state_4C = write_base + patch_pos
-60 50 4c  ; state_50 = address (for H_74)
-60 51 4d  ; state_51 = value (rel32, for H_74)
-41 74         ; emit mov [rdx], eax to write rel32
+55 4C 4D        ; [state_4C] = rel32 in state_4D
 ; i++, loop
+66 47
+70 64
+
+; H_FD: skip unresolved fixup target, continue loop
+40 fd
 66 47
 70 64
 
