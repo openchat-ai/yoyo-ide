@@ -18,7 +18,10 @@ try {
   fs.writeFileSync(outB, b);
   let diffs = 0;
   for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) diffs++;
+  if (a.length !== b.length) diffs += Math.abs(a.length - b.length);
   console.log('x64 vs tir-x64 size', a.length, b.length, 'diffs', diffs);
+  if (diffs !== 0) process.exit(1);
+  console.log('M2 PASS');
 } catch (e) {
   console.error('tir-x64:', e.message);
   process.exit(1);

@@ -29,10 +29,21 @@ const backends = {
   },
   'tir-x64': {
     id: 'tir-x64',
-    description: 'TIR → x64 (Phase 2 — codegen in progress)',
+    description: 'TIR → x64 (Phase 2)',
     compile(src, opts) {
-      const mod = tir.lowerProgramFromSource(src);
-      return tirX64.compile(src, opts, mod);
+      const handlerOrder = opts?.handlerOrder || process.env.TIR_HANDLER_ORDER || 'analyze';
+      const mod = tir.lowerProgramFromSource(src, { handlerOrder });
+      return tirX64.compile(src, { ...opts, handlerOrder }, mod);
+    },
+  },
+  'tir-wasm': {
+    id: 'tir-wasm',
+    description: 'TIR → WASM (Phase 4 skeleton)',
+    compile(src, opts) {
+      const handlerOrder = opts?.handlerOrder || process.env.TIR_HANDLER_ORDER || 'file';
+      const mod = tir.lowerProgramFromSource(src, { handlerOrder });
+      const wasm = require('./tir-wasm.js');
+      return wasm.compile(src, opts, mod);
     },
   },
 };

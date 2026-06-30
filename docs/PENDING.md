@@ -6,14 +6,16 @@ Items intentionally **not** blocking the aggressive evolution track (`docs/evolu
 
 **Gate:** `bash scripts/bootstrap-native.sh 3` → `cmp gen2 gen3` byte-identical.
 
-### Current state (2026-06-30)
+### Current state (2026-06-30, updated)
 
 | Check | Status |
 |-------|--------|
+| M2 TIR-x64 ≡ x64 gen1 | **PASS** (0 byte diffs via `linux-emit-core.js`) |
 | gen1 runs, emits gen2 | OK |
-| gen2 forward fixups (`e8 rel32`) | **3** bad sites (was 526) via native `H_FE` resolver |
-| gen2 self-host (`gen2` → gen3) | **FAIL** — ~27k vs ~370 bytes of real `.text`; handler map empty in gen3 |
-| `cmp gen2 gen3` | ~27k differing bytes |
+| gen2 forward fixups (`e8 rel32`) | **3** bad sites via native `H_FE` resolver |
+| gen2 self-host (`gen2` → gen3) | **FAIL** — output differs (~5+ byte pairs in 106496-byte ELF) |
+| `cmp gen2 gen3` | FAIL |
+| `TIR_BOOTSTRAP=1` gen1 | TIR-built gen1 ≡ x64 gen1; Stage 3 still FAIL |
 
 ### Root cause (confirmed, 2026-06-30 deep dive)
 

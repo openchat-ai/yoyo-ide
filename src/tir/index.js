@@ -4,6 +4,7 @@ const { createModule, createFunction } = require('./module.js');
 const { lowerProgram, lowerProgramFromSource } = require('./lower.js');
 const { verifyModule } = require('./verify.js');
 const { printModule } = require('./print.js');
+const { serializeModule, deserializeModule } = require('./serialize.js');
 const { Op, JCC, isForwardFixupOp } = require('./ops.js');
 
 module.exports = {
@@ -13,6 +14,8 @@ module.exports = {
   lowerProgramFromSource,
   verifyModule,
   printModule,
+  serializeModule,
+  deserializeModule,
   Op,
   JCC,
   isForwardFixupOp,

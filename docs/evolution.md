@@ -66,20 +66,30 @@ Chasing parity handler-by-handler (`H_37`, `H_63`, `H_A8`, …) scales as **O(ha
 
 ### Phase 2 — TIR → x64 backend
 
-- New `src/backends/tir-x64.js`: emit from TIR only (reuse `encode-x64.js`, `linux-runtime.js`)
-- Shared fixup resolver (port `buildLinuxFixupResolver` logic to IR pass)
-- **Gate:** `node src/yoyo.js --backend=tir-x64 projects/yoyo.ty out` matches `node src/yoyo.js out` for gen1
+- `src/backends/linux-emit-core.js` — shared opcode → x64 mapping
+- `src/backends/tir-emit-linux.js` — TIR module emission
+- **Gate M2:** `scripts/compare-backends.js` → **0 byte diffs** (analyze handler order)
 
 ### Phase 3 — Cut the dual path
 
-- `yoyo-gen.js` emits **TIR assembly** (`.ytir`) or embeds TIR bytecode instead of meta-opcode soup
-- gen1 built from TIR; gen2 built by gen1-TIR; Stage 3 = TIR fixed point
-- Deprecate scan-time `H_30` emitters except bootstrap legacy
+- `TIR_BOOTSTRAP=1` in `scripts/bootstrap-native.sh` builds gen1 via `--backend=tir-x64`
+- `TIR_HANDLER_ORDER=analyze|file` env for lowering/emission order
+- gen1 TIR ≡ x64; gen2+ still scan-emitted until runtime TIR cutover
 
 ### Phase 4 — Multi-target
 
-- WASM backend from same TIR
-- Optional typed state slots (replace implicit `state_XX` numbering)
+- `src/backends/tir-wasm.js` — WASM skeleton (`--backend=tir-wasm`)
+- Optional typed state slots (replace implicit `state_XX` numbering) — TBD
+
+### Phase 5 — Bootstrap Stage 3 via TIR
+
+- gen1 via `TIR_BOOTSTRAP=1` — **ready**
+- `gen2 === gen3` fixed point — **still FAIL** (scan path in gen2 output)
+
+### Phase 6 — `.ytir` export + CI
+
+- `src/tir/serialize.js`, `scripts/export-ytir.js`
+- `scripts/evolution-check.sh` — M1 + M2 gates
 
 ## TIR design choices (aggressive)
 
@@ -128,20 +138,29 @@ Intrinsics lower to platform calls in backend — **never** re-parsed as text.
 # Lower yoyo.ty → TIR summary
 node scripts/tir-check.js projects/yoyo.ty
 
-# Verbose lowering
-node scripts/tir-check.js projects/yoyo.ty --verbose
+# M2 gate: x64 vs tir-x64 byte match
+node scripts/compare-backends.js
 
-# Future: TIR-only codegen
+# Full evolution CI (M1 + M2)
+bash scripts/evolution-check.sh
+
+# Export .ytir
+node scripts/export-ytir.js projects/yoyo.ty build/yoyo.ytir
+
+# TIR-only codegen (M2 — analyze order, byte-match x64)
 node src/yoyo.js --backend=tir-x64 --target=linux projects/yoyo.ty build/yoyo
+
+# Bootstrap with TIR gen1
+TIR_BOOTSTRAP=1 bash scripts/bootstrap-native.sh 3
 ```
 
 ## Success metrics
 
-| Milestone | Criterion |
-|-----------|-----------|
-| M1 | `tir-check` reports ≥120 handlers, ≥500 fixups on `projects/yoyo.ty` |
-| M2 | TIR-x64 gen1 byte-match Node gen1 (Linux) |
-| M3 | `bootstrap-native.sh 3` PASS via TIR path |
-| M4 | `yoyo-gen` outputs TIR, not 2500-line meta-source |
+| Milestone | Criterion | Status |
+|-----------|-----------|--------|
+| M1 | `tir-check` reports ≥120 handlers, ≥500 fixups on `projects/yoyo.ty` | **PASS** |
+| M2 | TIR-x64 gen1 byte-match Node gen1 (Linux) | **PASS** (0 diffs) |
+| M3 | `bootstrap-native.sh 3` PASS via TIR path | **FAIL** (scan gen2) |
+| M4 | `yoyo-gen` outputs TIR, not 2500-line meta-source | **TBD** |
 
 Stage 3 meta-emitter parity is **documented as deferred** in `docs/PENDING.md` until M3.

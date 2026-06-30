@@ -59,19 +59,25 @@ Forward fixups are recorded at lower time (`fixups[]`).
 |-----------|--------|
 | `docs/evolution.md` | **Aggressive roadmap** |
 | `docs/PENDING.md` | Stage 3 deferred |
-| `src/tir/lower.js` | File-order lowering + fixups |
+| `src/tir/lower.js` | File-order + analyze-order lowering |
+| `src/tir/serialize.js` | `.ytir` export/import |
 | `src/tir/verify.js` | Module validation |
 | `src/tir/print.js` | Human-readable dump |
-| `src/backends/tir-x64.js` | Phase 2 stub |
+| `src/backends/linux-emit-core.js` | Shared x64 emission |
+| `src/backends/tir-x64.js` | TIR → x64 (M2 PASS) |
+| `src/backends/tir-wasm.js` | WASM skeleton |
 | `--backend=tir` | Lower + verify + x64 fallback |
-| `--backend=tir-x64` | Lower + verify (codegen TBD) |
+| `--backend=tir-x64` | Lower + TIR codegen |
+| `--backend=tir-wasm` | Lower + WASM skeleton |
 
 ## Commands
 
 ```bash
 node scripts/tir-check.js projects/yoyo.ty
 node scripts/tir-check.js projects/yoyo.ty --verbose
-node src/yoyo.js --backend=tir --target=linux projects/yoyo.ty build/yoyo
+node scripts/export-ytir.js projects/yoyo.ty build/yoyo.ytir
+bash scripts/evolution-check.sh
+node src/yoyo.js --backend=tir-x64 --target=linux projects/yoyo.ty build/yoyo
 ```
 
 ## Milestones

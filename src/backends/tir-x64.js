@@ -13,9 +13,11 @@ function compile(_src, opts, mod) {
     throw new Error('TIR verify failed:\n' + v.errors.join('\n'));
   }
   if (opts && opts.verbose) {
-    console.error('[tir-x64] handlers:', mod.meta?.handlerCount, 'fixups:', mod.meta?.fixupCount);
+    console.error('[tir-x64] handlers:', mod.meta?.handlerCount, 'fixups:', mod.meta?.fixupCount,
+      'order:', mod.meta?.handlerOrder || opts.handlerOrder || 'file');
   }
-  return emitModule(mod, opts);
+  const handlerOrder = opts?.handlerOrder || process.env.TIR_HANDLER_ORDER || 'analyze';
+  return emitModule(mod, { ...opts, handlerOrder, source: _src });
 }
 
 module.exports = { compile };

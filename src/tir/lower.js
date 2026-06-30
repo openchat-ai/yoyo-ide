@@ -1,6 +1,6 @@
 'use strict';
 
-const { parse } = require('../yoyo.js');
+const { parse, analyze } = require('../yoyo.js');
 const { Op, JCC, isForwardFixupOp } = require('./ops.js');
 const { createModule, createFunction } = require('./module.js');
 
@@ -117,14 +117,58 @@ function lowerHandlerBody(ops, mod) {
   return tirOps;
 }
 
-function lowerProgramFromSource(text) {
+function lowerProgramFromSource(text, opts = {}) {
   const mod = createModule('yoyo');
+  const useAnalyze = opts.handlerOrder === 'analyze';
+
+  if (useAnalyze) {
+    const prog = analyze(parse(text));
+    mod.strings = prog.strings;
+    mod.blobs = prog.blobs;
+
+    const topFn = createFunction('__top');
+    topFn.blocks[0].ops = lowerHandlerBody(prog.top, mod);
+    mod.functions.push(topFn);
+
+    mod.handlerOrder = [];
+    const order = Object.keys(prog.handlers).map(k => +k).sort((a, b) => a - b);
+    for (const hh of order) {
+      const body = prog.handlers[hh] || [];
+      const fn = createFunction('H' + hh.toString(16));
+      fn.blocks[0].ops = [{ kind: Op.LABEL, hh }, ...lowerHandlerBody(body, mod)];
+      mod.handlerOrder.push(hh);
+      mod.functions.push(fn);
+    }
+    mod.meta = {
+      handlerCount: order.length,
+      fixupCount: mod.fixups.length,
+      topOpCount: topFn.blocks[0].ops.length,
+      handlerOrder: 'analyze',
+    };
+    return mod;
+  }
+
   const order = handlerFileOrder(text);
   const { top, handlers } = splitHandlers(text);
 
   const topFn = createFunction('__top');
   topFn.blocks[0].ops = lowerHandlerBody(top, mod);
   mod.functions.push(topFn);
+
+  for (const op of top) {
+    if (op.op === 0x12) {
+      const id = op.args[0] ? op.args[0].v : mod.stringCount || 0;
+      const textVal = op.args[1] ? op.args[1].v : (op.args[0] && op.args[0].t === 's' ? op.args[0].v : '');
+      mod.strings = mod.strings || {};
+      mod.strings[id] = { text: textVal };
+    } else if (op.op === 0x13) {
+      mod.blobs = mod.blobs || [];
+      mod.blobs.push({
+        off: op.args[0].v,
+        data: op.args[1].raw || Buffer.from(op.args[1].v, 'hex'),
+      });
+    }
+  }
 
   for (const hh of order) {
     const body = handlers.get(hh) || [];
@@ -135,10 +179,28 @@ function lowerProgramFromSource(text) {
     mod.functions.push(fn);
   }
 
+  for (const [, body] of handlers) {
+    for (const op of body) {
+      if (op.op === 0x12) {
+        const id = op.args[0] ? op.args[0].v : 0;
+        const textVal = op.args[1] ? op.args[1].v : (op.args[0] && op.args[0].t === 's' ? op.args[0].v : '');
+        mod.strings = mod.strings || {};
+        mod.strings[id] = { text: textVal };
+      } else if (op.op === 0x13) {
+        mod.blobs = mod.blobs || [];
+        mod.blobs.push({
+          off: op.args[0].v,
+          data: op.args[1].raw || Buffer.from(op.args[1].v, 'hex'),
+        });
+      }
+    }
+  }
+
   mod.meta = {
     handlerCount: order.length,
     fixupCount: mod.fixups.length,
     topOpCount: topFn.blocks[0].ops.length,
+    handlerOrder: 'file',
   };
   return mod;
 }
