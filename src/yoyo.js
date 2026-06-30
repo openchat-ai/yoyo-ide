@@ -23,6 +23,7 @@ function parse(text){
     const args=p.slice(1).map(x=>{
       if(x[0]==='s'){const b=[];for(let i=1;i<x.length;i+=2)b.push(parseInt(x.substr(i,2),16)||0);const B=Buffer.from(b);return{t:'s',v:B.toString('utf8'),raw:B};}
       if(op===0xA0){return{t:'h',v:x};}
+      if(op===0xA1){return{t:'n',v:parseInt(x,16)||0};}
       return{t:'n',v:parseInt(x,16)||0};
     });
     if(op===0xFF){}
@@ -270,6 +271,7 @@ function compileLinux(src){
       const hex=a[0]?a[0].v:'';
       for(let i=0;i<hex.length;i+=2){const b=parseInt(hex.substr(i,2),16);if(!isNaN(b))code.u8(b);}
     }
+    else if(o===0xA1){if(a[0])code.u8(a[0].v&255);}
   }
 
   for(const f of code.fixups){const t=code.labels[f.n];if(t!==undefined)code.b.writeInt32LE(t-(f.p+4),f.p);}

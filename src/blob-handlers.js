@@ -45,11 +45,10 @@ function parseSectionEnds(src) {
   return endsWithFF;
 }
 
-function hexChunks(buf) {
-  const hex = buf.toString('hex');
+function a1ByteLines(buf) {
   const lines = [];
-  for (let i = 0; i < hex.length; i += CHUNK_HEX) {
-    lines.push('a0 ' + hex.slice(i, i + CHUNK_HEX));
+  for (let i = 0; i < buf.length; i++) {
+    lines.push('a1 ' + buf[i].toString(16));
   }
   return lines;
 }
@@ -112,7 +111,7 @@ function blobHandlers(src, rootDir) {
       out.push(line);
       if (slice && slice.length > 0) {
         out.push('; blob ' + slice.length + ' bytes from reference scan');
-        out.push(...hexChunks(slice));
+        out.push(...a1ByteLines(slice));
         i++;
         while (i < raw.length) {
           const body = raw[i].replace(/;.*$/, '').trim();

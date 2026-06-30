@@ -42,10 +42,10 @@
 61 03 1000
 ; Allocate handler offset table (256 entries x4 bytes = 1024) -> state_04
 20 04 400
-; Allocate fixup hh array (max 256 fixups x4 bytes) -> state_05
-20 05 400
+; Allocate fixup hh array (max 1024 fixups x4 bytes) -> state_05
+20 05 1000
 ; Allocate fixup patch-position array -> state_06
-20 06 400
+20 06 1000
 ; Allocate defined-handler bitmap (256 bytes, mmap-zeroed) -> state_15
 20 15 100
 ; Initialize emitter state: fixup_count=0, first_handler_flag=0
@@ -528,8 +528,16 @@
 40 5d
 30 41 85
 65 40 41
-72 4c
+72 bd
 41 8d  ; opcode 0x85: emit state-to-state memcpy
+70 4c
+
+; H_BD: opcode 0xA1 - emit one raw byte from numeric arg (meta-compile)
+40 bd
+30 41 a1
+65 40 41
+72 4c
+41 a8  ; opcode 0xA1: inline byte emit
 70 4c
 
 ; H_4C: reset scanner state and loop back to H_01
@@ -663,13 +671,143 @@
 66 12
 FF
 
+; H_FE: native forward-fixup resolver (deterministic; replaces H_63 loop)
+40 fe
+a1 48
+a1 31
+a1 c9
+a1 4d
+a1 8b
+a1 57
+a1 38
+a1 4c
+a1 39
+a1 d1
+a1 0f
+a1 83
+a1 6d
+a1 00
+a1 00
+a1 00
+a1 49
+a1 89
+a1 c8
+a1 48
+a1 b8
+a1 04
+a1 00
+a1 00
+a1 00
+a1 00
+a1 00
+a1 00
+a1 00
+a1 4c
+a1 0f
+a1 af
+a1 c0
+a1 4d
+a1 8b
+a1 5f
+a1 28
+a1 4c
+a1 89
+a1 df
+a1 4c
+a1 01
+a1 c7
+a1 8b
+a1 07
+a1 4d
+a1 8b
+a1 5f
+a1 30
+a1 4c
+a1 89
+a1 df
+a1 4c
+a1 01
+a1 c7
+a1 8b
+a1 17
+a1 48
+a1 83
+a1 fa
+a1 1c
+a1 0f
+a1 82
+a1 31
+a1 00
+a1 00
+a1 00
+a1 48
+a1 89
+a1 c7
+a1 48
+a1 b8
+a1 04
+a1 00
+a1 00
+a1 00
+a1 00
+a1 00
+a1 00
+a1 00
+a1 48
+a1 0f
+a1 af
+a1 f8
+a1 4d
+a1 8b
+a1 5f
+a1 20
+a1 49
+a1 01
+a1 fb
+a1 45
+a1 8b
+a1 0b
+a1 4c
+a1 89
+a1 c8
+a1 48
+a1 29
+a1 d0
+a1 48
+a1 83
+a1 e8
+a1 04
+a1 4d
+a1 8b
+a1 5f
+a1 18
+a1 4c
+a1 89
+a1 df
+a1 48
+a1 01
+a1 d7
+a1 89
+a1 07
+a1 48
+a1 83
+a1 c1
+a1 01
+a1 e9
+a1 8a
+a1 ff
+a1 ff
+a1 ff
+a1 c3
+FF
+
 ; H_1E: emit auto-ret for the last handler, then resolve fixups
 40 1e
 30 45 c3
 41 e0  ; emit 0xC3 (RET) as auto-ret for last handler
 30 45 cc
 41 e0  ; SENTINEL INT3 before fixup
-41 63  ; resolve all forward-jump fixups
+41 fe  ; resolve forward fixups via native H_FE
 FF      ; return to H_CB
 
 ; H_CB: EOF finalizer (called from H_CC)
@@ -681,6 +819,12 @@ FF      ; return to H_CC
 40 cc
 41 cb  ; call H_CB
 FF      ; return to H_C3 after scan
+
+; H_A8: emit raw byte from state_50 (0xA0 inline hex arg)
+40 a8
+60 45 50
+41 e0
+FF
 
 ; H_E0: emit byte from state_45 -> [state_03 + state_0E], advance state_0E
 40 e0
@@ -1103,23 +1247,7 @@ FF
 
 ; H_36: opcode 0x70 hh - emit JMP rel32 (E9 disp32)
 40 36
-41 f7  ; state_49 = defined[state_50]
-; If !defined[hh] it's a forward jump (handler not yet seen in scan)
-30 41 00
-65 49 41
-71 42  ; forward -> H_42
-41 e7  ; backward: state_4D = handler_table[state_50]
-; Backward jump: compute rel32 = target - (state_0E + 5)
-30 45 e9
-41 e0
-; state_4E = state_0E + 4  (end of instruction after disp32)
-60 4e 0e
-61 4e 04
-65 4d 4e  ; target==end -> H_FC (avoid rel32=0 backward)
-71 fc
-69 4d 4e  ; rel32 = target - end
-41 e5
-FF
+70 42  ; always forward fixup
 
 ; H_FC: branch opcode already emitted — record forward fixup + zero placeholder
 40 fc
@@ -1157,20 +1285,7 @@ FF
 30 41 00
 65 50 41
 71 36  ; hh==0 -> H_36 emit JMP
-41 f7
-30 41 00
-65 49 41
-71 43
-41 e7
-30 45 e8
-41 e0
-60 4e 0e
-61 4e 04
-65 4d 4e  ; target==end -> H_FC
-71 fc
-69 4d 4e
-41 e5
-FF
+70 43  ; always forward CALL fixup
 
 ; H_43: forward CALL - emit E8, record fixup (rel32 pos), then placeholder
 40 43
@@ -1190,22 +1305,7 @@ FF
 
 ; H_38: opcode 0x71 hh - emit JE rel32 (0F 84 disp32)
 40 38
-41 f7
-30 41 00
-65 49 41
-71 44
-41 e7
-30 45 0f
-41 e0
-30 45 84
-41 e0
-60 4e 0e
-61 4e 04
-65 4d 4e  ; target==end -> H_FC
-71 fc
-69 4d 4e
-41 e5
-FF
+70 44  ; always forward fixup
 
 ; H_44: forward JE - emit 0F 84 placeholder and record fixup
 40 44
@@ -1227,22 +1327,7 @@ FF
 
 ; H_9C: generic jcc rel32 emitter (state_F0 = x86 cond byte, 0x84/0x85/0x8C/0x8D/0x8E/0x8F/...)
 40 9c
-41 f7
-30 41 00
-65 49 41
-71 9d
-41 e7
-30 45 0f
-41 e0
-60 45 f0
-41 e0
-60 4e 0e
-61 4e 04
-65 4d 4e  ; target==end -> H_FC
-71 fc
-69 4d 4e
-41 e5
-FF
+70 9d  ; always forward fixup
 
 ; H_9D: forward generic jcc - emit 0F + cond placeholder and record fixup
 40 9d
@@ -1501,22 +1586,7 @@ FF
 
 ; H_78: opcode 0x72 hh - emit JNE rel32
 40 78
-41 f7
-30 41 00
-65 49 41
-71 7d
-41 e7
-30 45 0f
-41 e0
-30 45 85
-41 e0
-60 4e 0e
-61 4e 04
-65 4d 4e  ; target==end -> H_FC
-71 fc
-69 4d 4e
-41 e5
-FF
+70 7d  ; always forward fixup
 
 ; H_7D: forward JNE - emit 0F 85 placeholder and record fixup
 40 7d
@@ -1538,22 +1608,7 @@ FF
 
 ; H_79: opcode 0x75 hh - emit JBE rel32
 40 79
-41 f7
-30 41 00
-65 49 41
-71 7e
-41 e7
-30 45 0f
-41 e0
-30 45 86
-41 e0
-60 4e 0e
-61 4e 04
-65 4d 4e  ; target==end -> H_FC
-71 fc
-69 4d 4e
-41 e5
-FF
+70 7e  ; always forward fixup
 
 ; H_7E: forward JBE - emit 0F 86 placeholder and record fixup
 40 7e
@@ -1575,22 +1630,7 @@ FF
 
 ; H_7A: opcode 0x77 hh - emit JB rel32
 40 7a
-41 f7
-30 41 00
-65 49 41
-71 7f
-41 e7
-30 45 0f
-41 e0
-30 45 82
-41 e0
-60 4e 0e
-61 4e 04
-65 4d 4e  ; target==end -> H_FC
-71 fc
-69 4d 4e
-41 e5
-FF
+70 7f  ; always forward fixup
 
 ; H_7F: forward JB - emit 0F 82 placeholder and record fixup
 40 7f
@@ -1612,22 +1652,7 @@ FF
 
 ; H_7B: opcode 0x78 hh - emit JAE rel32
 40 7b
-41 f7
-30 41 00
-65 49 41
-71 80
-41 e7
-30 45 0f
-41 e0
-30 45 83
-41 e0
-60 4e 0e
-61 4e 04
-65 4d 4e  ; target==end -> H_FC
-71 fc
-69 4d 4e
-41 e5
-FF
+70 80  ; always forward fixup
 
 ; H_80: forward JAE - emit 0F 83 placeholder and record fixup
 40 80
@@ -1649,22 +1674,7 @@ FF
 
 ; H_7C: opcode 0x7A hh - emit JA rel32
 40 7c
-41 f7
-30 41 00
-65 49 41
-71 81
-41 e7
-30 45 0f
-41 e0
-30 45 87
-41 e0
-60 4e 0e
-61 4e 04
-65 4d 4e  ; target==end -> H_FC
-71 fc
-69 4d 4e
-41 e5
-FF
+70 81  ; always forward fixup
 
 ; H_81: forward JA - emit 0F 87 placeholder and record fixup
 40 81

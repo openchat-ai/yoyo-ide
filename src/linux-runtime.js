@@ -33,6 +33,67 @@ function buildLinuxOutputStartup(dataRva) {
   return b.b.slice(0, b.tell());
 }
 
+// Native forward-fixup resolver for the output compiler (state in R15).
+// state_03=write_base, state_04=handler_table, state_05=fixup_hh, state_06=fixup_pos, state_07=count
+function buildLinuxFixupResolver(startupLen) {
+  const b = new E.Buf();
+  const RAX = 0, RCX = 1, RDX = 2, RDI = 7, R8 = 8, R9 = 9, R10 = 10, R11 = 11, R15 = 15;
+
+  E.xor_rr(b, RCX, RCX);
+  E.mov_rm64(b, R10, R15, 7 * 8);
+
+  const loopStart = b.tell();
+  E.cmp_rr(b, RCX, R10);
+  const jaeExitPos = b.tell();
+  E.jcc32(b, 7, 0);
+
+  E.mov_rr(b, R8, RCX);
+  E.mov_ri(b, RAX, 4n);
+  E.imul_rr(b, R8, RAX);
+
+  E.mov_rm64(b, R11, R15, 5 * 8);
+  E.mov_rr(b, RDI, R11);
+  E.add_rr(b, RDI, R8);
+  E.mov_rm(b, RAX, RDI, 0);
+
+  E.mov_rm64(b, R11, R15, 6 * 8);
+  E.mov_rr(b, RDI, R11);
+  E.add_rr(b, RDI, R8);
+  E.mov_rm(b, RDX, RDI, 0);
+
+  E.cmp_ri(b, RDX, startupLen);
+  const jbSkipPos = b.tell();
+  E.jcc32(b, 6, 0);
+
+  E.mov_rr(b, RDI, RAX);
+  E.mov_ri(b, RAX, 4n);
+  E.imul_rr(b, RDI, RAX);
+  E.mov_rm64(b, R11, R15, 4 * 8);
+  E.add_rr(b, R11, RDI);
+  E.mov_rm(b, R9, R11, 0);
+
+  E.mov_rr(b, RAX, R9);
+  E.sub_rr(b, RAX, RDX);
+  E.sub_ri(b, RAX, 4);
+
+  E.mov_rm64(b, R11, R15, 3 * 8);
+  E.mov_rr(b, RDI, R11);
+  E.add_rr(b, RDI, RDX);
+  E.mov_mr(b, RDI, 0, RAX, false);
+
+  const skipLabel = b.tell();
+  b.b.writeInt32LE(skipLabel - (jbSkipPos + 6), jbSkipPos + 2);
+
+  E.add_ri(b, RCX, 1);
+  const jmpPos = b.tell();
+  E.jmp_rel(b, loopStart - (jmpPos + 5));
+
+  const exitLabel = b.tell();
+  b.b.writeInt32LE(exitLabel - (jaeExitPos + 6), jaeExitPos + 2);
+  E.ret(b);
+  return b.b.slice(0, b.tell());
+}
+
 function makeLinuxEmit(code, dr, strs, strPos) {
   function stSet(id, v) { E.mov_ri(code, RAX, BigInt(v)); E.mov_mr64(code, R15, id * 8, RAX); }
   function stGet(reg, id) { E.mov_rm64(code, reg, R15, id * 8); }
@@ -125,4 +186,4 @@ function makeLinuxEmit(code, dr, strs, strPos) {
   return { emitLoadFile, emitWriteFile, emitAlloc, emitExit, stSet, stGet, stPut, ld };
 }
 
-module.exports = { buildLinuxStartup, buildLinuxOutputStartup, makeLinuxEmit, syscall };
+module.exports = { buildLinuxStartup, buildLinuxOutputStartup, buildLinuxFixupResolver, makeLinuxEmit, syscall };

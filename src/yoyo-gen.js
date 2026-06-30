@@ -5,7 +5,7 @@ const E    = require('./encode-x64.js');
 const { PE } = require('./pe-builder.js');
 const { ELF, BASE } = require('./elf-builder.js');
 const { STATE_TARGET, ELF_TEXT_FILE_OFF, PE_TEXT_FILE_OFF } = require('./platform-config.js');
-const { buildLinuxOutputStartup } = require('./linux-runtime.js');
+const { buildLinuxOutputStartup, buildLinuxFixupResolver } = require('./linux-runtime.js');
 const { appendLinuxEmitHandlers } = require('./linux-self-emit.js');
 const { blobHandlers } = require('./blob-handlers.js');
 
@@ -124,6 +124,16 @@ const LDB  = (d, s, o) => '80 ' + hx(d) + ' ' + hx(s) + ' ' + hx(o || 0);
 const RET  = ()        => 'FF';
 const STR  = s         => '12 s' + Buffer.from(s + '\0', 'ascii').toString('hex');
 
+function emitNativeHandler(handlerId, blob, comment) {
+  C(comment || ('H_' + hx(handlerId) + ': native blob (' + blob.length + ' bytes)'));
+  L(H(handlerId));
+  for (let i = 0; i < blob.length; i++) {
+    L('a1 ' + hx(blob[i], 2));
+  }
+  L(RET());
+  B();
+}
+
 // Emit yoyo lines: u32 LE load from [state_addr] into state_dst (clobbers 0x42, 0x49-0x4C).
 function emitLoadU32LE(dst, addr) {
   L(LDB(0x49, addr, 0) + ' ; b0');
@@ -213,11 +223,11 @@ L(ADD(0x03, tplTextOff));
 C('Allocate handler offset table (256 entries x4 bytes = 1024) -> state_04');
 L('20 04 400');
 
-C('Allocate fixup hh array (max 256 fixups x4 bytes) -> state_05');
-L('20 05 400');
+C('Allocate fixup hh array (max 1024 fixups x4 bytes) -> state_05');
+L('20 05 1000');
 
 C('Allocate fixup patch-position array -> state_06');
-L('20 06 400');
+L('20 06 1000');
 
 C('Allocate defined-handler bitmap (256 bytes, mmap-zeroed) -> state_15');
 L('20 15 100');
@@ -648,8 +658,15 @@ B();
 
 C('H_5D: opcode 0x85 - emit REP MOVSB (state-to-state memcpy)');
 L(H(0x5D));
-L(SET(0x41, 0x85)); L(CMP(0x40, 0x41)); L(JNE(0x4C));
+L(SET(0x41, 0x85)); L(CMP(0x40, 0x41)); L(JNE(0xBD));
 L(CH(0x8D) + '  ; opcode 0x85: emit state-to-state memcpy');
+L(JMP(0x4C));
+B();
+
+C('H_BD: opcode 0xA1 - emit one raw byte from numeric arg (meta-compile)');
+L(H(0xBD));
+L(SET(0x41, 0xA1)); L(CMP(0x40, 0x41)); L(JNE(0x4C));
+L(CH(0xA8) + '  ; opcode 0xA1: inline byte emit');
 L(JMP(0x4C));
 B();
 
@@ -764,12 +781,21 @@ L(RET());
 B();
 
 // ── H_1E: EOF handler ─────────────────────────────────────────────────────────
+if (isLinux) {
+  emitNativeHandler(0xFE, buildLinuxFixupResolver(outputStartup.length),
+    'H_FE: native forward-fixup resolver (deterministic; replaces H_63 loop)');
+}
+
 C('H_1E: emit auto-ret for the last handler, then resolve fixups');
 L(H(0x1E));
 L(SET(0x45, 0xC3));
 L(CH(0xE0) + '  ; emit 0xC3 (RET) as auto-ret for last handler');
 L(SET(0x45, 0xCC)); L(CH(0xE0) + '  ; SENTINEL INT3 before fixup');
-L(CH(0x63) + '  ; resolve all forward-jump fixups');
+if (isLinux) {
+  L(CH(0xFE) + '  ; resolve forward fixups via native H_FE');
+} else {
+  L(CH(0x63) + '  ; resolve all forward-jump fixups');
+}
 L(RET() + '      ; return to H_CB');
 B();
 
@@ -793,6 +819,14 @@ B();
 //             state_4D=u32-value-to-emit, state_4E=rel32-end-pos
 //             state_47=disp-b0, state_49=disp-b1
 // ════════════════════════════════════════════════════════════════════════════════
+
+// ── Helper: H_A8 - emit byte(s) from opcode 0xA0 arg (state_50) ───────────────
+C('H_A8: emit raw byte from state_50 (0xA0 inline hex arg)');
+L(H(0xA8));
+L(GET(0x45, 0x50));
+L(CH(0xE0));
+L(RET());
+B();
 
 // ── Helper: H_E0 - emit one byte (state_45) to output code section ────────────
 C('H_E0: emit byte from state_45 -> [state_03 + state_0E], advance state_0E');
@@ -1164,23 +1198,10 @@ L(RET());
 B();
 
 // ── H_36/H_42: opcode 0x70 hh - emit JMP rel32 ───────────────────────────────
-// Backward: E9 rel32 = 5 bytes
-// Forward:  E9 00000000 + fixup entry = 5 bytes
+// Always record forward fixup; H_63 patches at EOF (matches Node compileLinux).
 C('H_36: opcode 0x70 hh - emit JMP rel32 (E9 disp32)');
 L(H(0x36));
-L(CH(0xF7) + '  ; state_49 = defined[state_50]');
-C('If !defined[hh] it\'s a forward jump (handler not yet seen in scan)');
-L(SET(0x41, 0)); L(CMP(0x49, 0x41)); L(JE(0x42) + '  ; forward -> H_42');
-L(CH(0xE7) + '  ; backward: state_4D = handler_table[state_50]');
-C('Backward jump: compute rel32 = target - (state_0E + 5)');
-L(SET(0x45, 0xE9)); L(CH(0xE0));   // emit E9 opcode
-C('state_4E = state_0E + 4  (end of instruction after disp32)');
-L(GET(0x4E, 0x0E)); L(ADD(0x4E, 4));
-L(CMP(0x4D, 0x4E) + '  ; target==end -> H_FC (avoid rel32=0 backward)');
-L(JE(0xFC));
-L(SUBV(0x4D, 0x4E) + '  ; rel32 = target - end');
-L(CH(0xE5));
-L(RET());
+L(JMP(0x42) + '  ; always forward fixup');
 B();
 
 C('H_FC: branch opcode already emitted — record forward fixup + zero placeholder');
@@ -1211,16 +1232,7 @@ C('H_37: opcode 0x41 hh - emit CALL rel32 (E8 disp32); hh==0 uses JMP (E9)');
 L(H(0x37));
 C('Handler 0 entry is emitted inline after top-level call site — emit JMP not CALL');
 L(SET(0x41, 0)); L(CMP(0x50, 0x41)); L(JE(0x36) + '  ; hh==0 -> H_36 emit JMP');
-L(CH(0xF7));
-L(SET(0x41, 0)); L(CMP(0x49, 0x41)); L(JE(0x43));
-L(CH(0xE7));
-L(SET(0x45, 0xE8)); L(CH(0xE0));
-L(GET(0x4E, 0x0E)); L(ADD(0x4E, 4));
-L(CMP(0x4D, 0x4E) + '  ; target==end -> H_FC');
-L(JE(0xFC));
-L(SUBV(0x4D, 0x4E));
-L(CH(0xE5));
-L(RET());
+L(JMP(0x43) + '  ; always forward CALL fixup');
 B();
 
 C('H_43: forward CALL - emit E8, record fixup (rel32 pos), then placeholder');
@@ -1236,20 +1248,9 @@ L(RET());
 B();
 
 // ── H_38/H_44: opcode 0x71 hh - emit JE rel32 ────────────────────────────────
-// JE rel32 encoding: 0F 84 rel32 (6 bytes)
 C('H_38: opcode 0x71 hh - emit JE rel32 (0F 84 disp32)');
 L(H(0x38));
-L(CH(0xF7));
-L(SET(0x41, 0)); L(CMP(0x49, 0x41)); L(JE(0x44));
-L(CH(0xE7));
-L(SET(0x45, 0x0F)); L(CH(0xE0));
-L(SET(0x45, 0x84)); L(CH(0xE0));
-L(GET(0x4E, 0x0E)); L(ADD(0x4E, 4));
-L(CMP(0x4D, 0x4E) + '  ; target==end -> H_FC');
-L(JE(0xFC));
-L(SUBV(0x4D, 0x4E));
-L(CH(0xE5));
-L(RET());
+L(JMP(0x44) + '  ; always forward fixup');
 B();
 
 C('H_44: forward JE - emit 0F 84 placeholder and record fixup');
@@ -1270,17 +1271,7 @@ B();
 // Future jcc opcodes only need a 7-line dispatcher that sets state_F0 and calls H_9C.
 C('H_9C: generic jcc rel32 emitter (state_F0 = x86 cond byte, 0x84/0x85/0x8C/0x8D/0x8E/0x8F/...)');
 L(H(0x9C));
-L(CH(0xF7));
-L(SET(0x41, 0)); L(CMP(0x49, 0x41)); L(JE(0x9D));
-L(CH(0xE7));
-L(SET(0x45, 0x0F)); L(CH(0xE0));
-L(GET(0x45, 0xF0)); L(CH(0xE0));
-L(GET(0x4E, 0x0E)); L(ADD(0x4E, 4));
-L(CMP(0x4D, 0x4E) + '  ; target==end -> H_FC');
-L(JE(0xFC));
-L(SUBV(0x4D, 0x4E));
-L(CH(0xE5));
-L(RET());
+L(JMP(0x9D) + '  ; always forward fixup');
 B();
 
 C('H_9D: forward generic jcc - emit 0F + cond placeholder and record fixup');
@@ -1489,17 +1480,7 @@ B();
 // H_78: opcode 0x72 hh - emit JNE rel32 (0F 85 disp32)
 C('H_78: opcode 0x72 hh - emit JNE rel32');
 L(H(0x78));
-L(CH(0xF7));
-L(SET(0x41, 0)); L(CMP(0x49, 0x41)); L(JE(0x7D));  // forward -> H_7D
-L(CH(0xE7));                                   // backward target -> state_4D
-L(SET(0x45, 0x0F)); L(CH(0xE0));              // backward: 0F 85 disp32
-L(SET(0x45, 0x85)); L(CH(0xE0));
-L(GET(0x4E, 0x0E)); L(ADD(0x4E, 4));
-L(CMP(0x4D, 0x4E) + '  ; target==end -> H_FC');
-L(JE(0xFC));
-L(SUBV(0x4D, 0x4E));
-L(CH(0xE5));
-L(RET());
+L(JMP(0x7D) + '  ; always forward fixup');
 B();
 
 C('H_7D: forward JNE - emit 0F 85 placeholder and record fixup');
@@ -1518,17 +1499,7 @@ B();
 // H_79: opcode 0x75 hh - emit JBE rel32 (0F 86 disp32)
 C('H_79: opcode 0x75 hh - emit JBE rel32');
 L(H(0x79));
-L(CH(0xF7));
-L(SET(0x41, 0)); L(CMP(0x49, 0x41)); L(JE(0x7E));
-L(CH(0xE7));
-L(SET(0x45, 0x0F)); L(CH(0xE0));
-L(SET(0x45, 0x86)); L(CH(0xE0));
-L(GET(0x4E, 0x0E)); L(ADD(0x4E, 4));
-L(CMP(0x4D, 0x4E) + '  ; target==end -> H_FC');
-L(JE(0xFC));
-L(SUBV(0x4D, 0x4E));
-L(CH(0xE5));
-L(RET());
+L(JMP(0x7E) + '  ; always forward fixup');
 B();
 
 C('H_7E: forward JBE - emit 0F 86 placeholder and record fixup');
@@ -1547,17 +1518,7 @@ B();
 // H_7A: opcode 0x77 hh - emit JB rel32 (0F 82 disp32)
 C('H_7A: opcode 0x77 hh - emit JB rel32');
 L(H(0x7A));
-L(CH(0xF7));
-L(SET(0x41, 0)); L(CMP(0x49, 0x41)); L(JE(0x7F));
-L(CH(0xE7));
-L(SET(0x45, 0x0F)); L(CH(0xE0));
-L(SET(0x45, 0x82)); L(CH(0xE0));
-L(GET(0x4E, 0x0E)); L(ADD(0x4E, 4));
-L(CMP(0x4D, 0x4E) + '  ; target==end -> H_FC');
-L(JE(0xFC));
-L(SUBV(0x4D, 0x4E));
-L(CH(0xE5));
-L(RET());
+L(JMP(0x7F) + '  ; always forward fixup');
 B();
 
 C('H_7F: forward JB - emit 0F 82 placeholder and record fixup');
@@ -1576,17 +1537,7 @@ B();
 // H_7B: opcode 0x78 hh - emit JAE rel32 (0F 83 disp32)
 C('H_7B: opcode 0x78 hh - emit JAE rel32');
 L(H(0x7B));
-L(CH(0xF7));
-L(SET(0x41, 0)); L(CMP(0x49, 0x41)); L(JE(0x80));
-L(CH(0xE7));
-L(SET(0x45, 0x0F)); L(CH(0xE0));
-L(SET(0x45, 0x83)); L(CH(0xE0));
-L(GET(0x4E, 0x0E)); L(ADD(0x4E, 4));
-L(CMP(0x4D, 0x4E) + '  ; target==end -> H_FC');
-L(JE(0xFC));
-L(SUBV(0x4D, 0x4E));
-L(CH(0xE5));
-L(RET());
+L(JMP(0x80) + '  ; always forward fixup');
 B();
 
 C('H_80: forward JAE - emit 0F 83 placeholder and record fixup');
@@ -1605,17 +1556,7 @@ B();
 // H_7C: opcode 0x7A hh - emit JA rel32 (0F 87 disp32)
 C('H_7C: opcode 0x7A hh - emit JA rel32');
 L(H(0x7C));
-L(CH(0xF7));
-L(SET(0x41, 0)); L(CMP(0x49, 0x41)); L(JE(0x81));
-L(CH(0xE7));
-L(SET(0x45, 0x0F)); L(CH(0xE0));
-L(SET(0x45, 0x87)); L(CH(0xE0));
-L(GET(0x4E, 0x0E)); L(ADD(0x4E, 4));
-L(CMP(0x4D, 0x4E) + '  ; target==end -> H_FC');
-L(JE(0xFC));
-L(SUBV(0x4D, 0x4E));
-L(CH(0xE5));
-L(RET());
+L(JMP(0x81) + '  ; always forward fixup');
 B();
 
 C('H_81: forward JA - emit 0F 87 placeholder and record fixup');
