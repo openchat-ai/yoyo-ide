@@ -656,9 +656,9 @@ FF
 66 0e
 FF
 
-; H_E2: emit stGet(RAX, state_46) = 4D 8B 87 disp32  (7 bytes)
+; H_E2: emit stGet(RAX, state_46) = 49 8B 87 disp32  (7 bytes)
 40 e2
-30 45 4d
+30 45 49
 41 e0
 30 45 8b
 41 e0
@@ -668,9 +668,9 @@ FF
 41 e4
 FF
 
-; H_EB: emit stGet(RDX, state_46) = 4D 8B 97 disp32  (7 bytes)
+; H_EB: emit stGet(RDX, state_46) = 49 8B 97 disp32  (7 bytes)
 40 eb
-30 45 4d
+30 45 49
 41 e0
 30 45 8b
 41 e0
@@ -816,8 +816,38 @@ FF
 30 41 00
 65 09 41
 71 40  ; not yet seen -> H_40 (first)
-; Not first: emit C3 (auto-ret for previous handler)
+; Not first: emit end for previous handler (H_00 -> Linux exit, else C3 ret)
+30 41 01
+65 50 41
+71 f6  ; hh==1 -> close emitted H_00 with exit
 30 45 c3
+41 e0
+70 41  ; -> H_41 record offset
+
+; H_F6: emit Linux exit at end of emitted H_00 (top enters via JMP, not CALL)
+40 f6
+; Linux exit: xor rdi,rdi; mov rax,60; syscall
+30 45 48
+41 e0
+30 45 31
+41 e0
+30 45 ff
+41 e0
+30 45 c7
+41 e0
+30 45 c0
+41 e0
+30 45 3c
+41 e0
+30 45 00
+41 e0
+30 45 00
+41 e0
+30 45 00
+41 e0
+30 45 0f
+41 e0
+30 45 05
 41 e0
 70 41  ; -> H_41 record offset
 
@@ -835,8 +865,6 @@ FF
 30 45 c0
 41 e0
 30 45 3c
-41 e0
-30 45 00
 41 e0
 30 45 00
 41 e0
@@ -873,18 +901,18 @@ FF
 41 e0
 30 45 b8
 41 e0
-; Decompose state_51 (vv) into byte0 and byte1, emit as LE64
-41 ed  ; state_4F=b0, state_47=b1
+; Decompose state_51 (vv) into 4 LE bytes, emit as imm64
+41 ed  ; state_4F=b0, state_47=b1, state_49=b2, state_4B=b3
 57 03 0E 4F
 66 0e
 57 03 0E 47
 66 0e
-; Bytes 2-7 of imm64 are zero (values fit in 16 bits)
+57 03 0E 49
+66 0e
+57 03 0E 4B
+66 0e
+; Bytes 4-7 of imm64 are zero
 30 45 00
-57 03 0E 45
-66 0e
-57 03 0E 45
-66 0e
 57 03 0E 45
 66 0e
 57 03 0E 45

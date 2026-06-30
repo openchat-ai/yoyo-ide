@@ -766,10 +766,10 @@ L(RET());
 B();
 
 // ── Helper: H_E2 - emit stGet(RAX, state[state_46]) (7 bytes) ────────────────
-// Encoding: REX(4D) 8B 87 disp32  (MOV RAX, [R15 + disp32])
-C('H_E2: emit stGet(RAX, state_46) = 4D 8B 87 disp32  (7 bytes)');
+// Encoding: REX(49) 8B 87 disp32  (MOV RAX, [R15 + disp32])
+C('H_E2: emit stGet(RAX, state_46) = 49 8B 87 disp32  (7 bytes)');
 L(H(0xE2));
-L(SET(0x45, 0x4D)); L(CH(0xE0));   // REX: W=1, R=1(RAX<8), B=1(R15>=8)
+L(SET(0x45, 0x49)); L(CH(0xE0));   // REX: W=1, R=0(RAX), B=1(R15>=8)
 L(SET(0x45, 0x8B)); L(CH(0xE0));   // MOV opcode
 L(SET(0x45, 0x87)); L(CH(0xE0));   // ModRM: mod=2, reg=0(RAX), rm=7(R15)
 L(CH(0xE1));                        // compute disp bytes
@@ -778,10 +778,10 @@ L(RET());
 B();
 
 // ── Helper: H_EB - emit stGet(RDX, state[state_46]) (7 bytes) ────────────────
-// Encoding: REX(4D) 8B 97 disp32  (MOV RDX, [R15 + disp32])
-C('H_EB: emit stGet(RDX, state_46) = 4D 8B 97 disp32  (7 bytes)');
+// Encoding: REX(49) 8B 97 disp32  (MOV RDX, [R15 + disp32])
+C('H_EB: emit stGet(RDX, state_46) = 49 8B 97 disp32  (7 bytes)');
 L(H(0xEB));
-L(SET(0x45, 0x4D)); L(CH(0xE0));
+L(SET(0x45, 0x49)); L(CH(0xE0));
 L(SET(0x45, 0x8B)); L(CH(0xE0));
 L(SET(0x45, 0x97)); L(CH(0xE0));   // ModRM: mod=2, reg=2(RDX), rm=7(R15)
 L(CH(0xE1));
@@ -936,8 +936,28 @@ C('Handler 0 is the main driver: record offset only (no exit/ret preamble)');
 L(SET(0x41, 0)); L(CMP(0x50, 0x41)); L(JE(0x41) + '  ; hh==0 -> H_41 record only');
 C('Check first-handler flag (state_09)');
 L(SET(0x41, 0)); L(CMP(0x09, 0x41)); L(JE(0x40) + '  ; not yet seen -> H_40 (first)');
-C('Not first: emit C3 (auto-ret for previous handler)');
+C('Not first: emit end for previous handler (H_00 -> Linux exit, else C3 ret)');
+if (isLinux) {
+  L(SET(0x41, 1)); L(CMP(0x50, 0x41)); L(JE(0xF6) + '  ; hh==1 -> close emitted H_00 with exit');
+}
 L(SET(0x45, 0xC3)); L(CH(0xE0));
+L(JMP(0x41) + '  ; -> H_41 record offset');
+B();
+
+C('H_F6: emit Linux exit at end of emitted H_00 (top enters via JMP, not CALL)');
+L(H(0xF6));
+C('Linux exit: xor rdi,rdi; mov rax,60; syscall');
+L(SET(0x45, 0x48)); L(CH(0xE0));
+L(SET(0x45, 0x31)); L(CH(0xE0));
+L(SET(0x45, 0xFF)); L(CH(0xE0));
+L(SET(0x45, 0xC7)); L(CH(0xE0));
+L(SET(0x45, 0xC0)); L(CH(0xE0));
+L(SET(0x45, 0x3C)); L(CH(0xE0));
+L(SET(0x45, 0x00)); L(CH(0xE0));
+L(SET(0x45, 0x00)); L(CH(0xE0));
+L(SET(0x45, 0x00)); L(CH(0xE0));
+L(SET(0x45, 0x0F)); L(CH(0xE0));
+L(SET(0x45, 0x05)); L(CH(0xE0));
 L(JMP(0x41) + '  ; -> H_41 record offset');
 B();
 
@@ -951,7 +971,6 @@ L(SET(0x45, 0xFF)); L(CH(0xE0));
 L(SET(0x45, 0xC7)); L(CH(0xE0));
 L(SET(0x45, 0xC0)); L(CH(0xE0));
 L(SET(0x45, 0x3C)); L(CH(0xE0));
-L(SET(0x45, 0x00)); L(CH(0xE0));
 L(SET(0x45, 0x00)); L(CH(0xE0));
 L(SET(0x45, 0x00)); L(CH(0xE0));
 L(SET(0x45, 0x00)); L(CH(0xE0));
@@ -996,14 +1015,14 @@ C('  movabs rax, vv = 48 B8 <vv 8 bytes LE>  (10 bytes total)');
 L(H(0x33));
 L(SET(0x45, 0x48)); L(CH(0xE0));   // REX.W
 L(SET(0x45, 0xB8)); L(CH(0xE0));   // MOV RAX, imm64
-C('Decompose state_51 (vv) into byte0 and byte1, emit as LE64');
-L(CH(0xED) + '  ; state_4F=b0, state_47=b1');
+C('Decompose state_51 (vv) into 4 LE bytes, emit as imm64');
+L(CH(0xED) + '  ; state_4F=b0, state_47=b1, state_49=b2, state_4B=b3');
 L('57 03 0E 4F'); L(INC(0x0E));    // emit b0
 L('57 03 0E 47'); L(INC(0x0E));    // emit b1
-C('Bytes 2-7 of imm64 are zero (values fit in 16 bits)');
+L('57 03 0E 49'); L(INC(0x0E));    // emit b2
+L('57 03 0E 4B'); L(INC(0x0E));    // emit b3
+C('Bytes 4-7 of imm64 are zero');
 L(SET(0x45, 0));
-L('57 03 0E 45'); L(INC(0x0E));
-L('57 03 0E 45'); L(INC(0x0E));
 L('57 03 0E 45'); L(INC(0x0E));
 L('57 03 0E 45'); L(INC(0x0E));
 L('57 03 0E 45'); L(INC(0x0E));
