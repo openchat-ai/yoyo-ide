@@ -42,10 +42,12 @@
 61 03 1000
 ; Allocate handler offset table (256 entries x4 bytes = 1024) -> state_04
 20 04 400
-; Allocate fixup hh array (max 256 fixups x4 bytes) -> state_05
-20 05 400
+; Allocate fixup hh array (max 1024 fixups x4 bytes) -> state_05
+20 05 1000
 ; Allocate fixup patch-position array -> state_06
-20 06 400
+20 06 1000
+; Allocate defined-handler bitmap (256 bytes, mmap-zeroed) -> state_15
+20 15 100
 ; Initialize emitter state: fixup_count=0, first_handler_flag=0
 30 07 00 ; fixup_count = 0
 30 09 00 ; first_handler_flag = 0
@@ -60,6 +62,16 @@
 68 0d 0c
 30 09 01 ; suppress H_31 first-handler exit prologue during scan
 41 01 ; call H_01 main scan loop
+; Snapshot handler offset table + final code_offset into output data (blob extraction)
+60 47 04
+60 48 08
+61 48 fe00
+30 53 400
+85 48 47 53
+60 48 08
+61 48 10200
+60 47 0e
+55 48 47
 ; Patch embedded blobs into output ELF data section (bootstrap self-hosting)
 60 47 02
 61 47 d000
@@ -126,6 +138,9 @@
 30 41 05
 65 40 41
 71 25 ; state 5 -> H_25
+30 41 06
+65 40 41
+71 b1 ; state 6 -> H_B1 (A0 hex emit)
 30 10 00 ; unknown state, reset
 70 01
 
@@ -198,6 +213,10 @@
 30 41 12
 65 13 41
 71 14 ; -> H_14 skip line
+; Opcode 0xA0 raw hex: inline emit bytes from rest of line
+30 41 a0
+65 13 41
+71 b0 ; -> H_B0 A0 mode
 ; LF/CR/; -> emit immediately (no args)
 30 41 0a
 65 0f 41
@@ -509,8 +528,16 @@
 40 5d
 30 41 85
 65 40 41
-72 4c
+72 bd
 41 8d  ; opcode 0x85: emit state-to-state memcpy
+70 4c
+
+; H_BD: opcode 0xA1 - emit one raw byte from numeric arg (meta-compile)
+40 bd
+30 41 a1
+65 40 41
+72 4c
+41 a8  ; opcode 0xA1: inline byte emit
 70 4c
 
 ; H_4C: reset scanner state and loop back to H_01
@@ -566,6 +593,58 @@
 71 2c ; arg_index==1 -> H_2C
 70 2d
 
+; H_B0: enter A0 inline hex emit mode (state 6)
+40 b0
+30 10 06 ; state = 6
+30 11 00
+30 12 00
+70 01
+
+; H_B1: state 6 - read hex nibbles, emit each complete byte via H_E0
+40 b1
+65 0c 0d
+78 b2  ; EOF -> finish A0 line
+80 0f 0c 00 ; read byte
+66 0c
+30 41 0a
+65 0f 41
+71 b2  ; LF -> done
+30 41 0d
+65 0f 41
+71 b2  ; CR -> done
+30 41 3b
+65 0f 41
+71 b2  ; ; -> done
+30 41 20
+65 0f 41
+71 01  ; space -> skip
+30 41 09
+65 0f 41
+71 01  ; tab -> skip
+30 41 30
+65 0f 41
+77 01  ; non-hex -> skip
+30 41 66
+65 0f 41
+7A 01  ; non-hex -> skip
+41 0c  ; accumulate nibble
+30 41 02
+65 12 41
+72 01  ; wait for 2 nibbles
+60 45 11
+41 e0  ; emit byte
+30 11 00
+30 12 00
+70 01
+
+; H_B2: end of A0 line - reset scanner state
+40 b2
+30 10 00
+30 11 00
+30 12 00
+30 14 00
+70 01
+
 ; H_0C: convert hex char in state_0F to nibble, accumulate into state_11
 40 0c
 60 40 0f
@@ -592,13 +671,143 @@
 66 12
 FF
 
+; H_FE: native forward-fixup resolver (deterministic; replaces H_63 loop)
+40 fe
+a1 48
+a1 31
+a1 c9
+a1 4d
+a1 8b
+a1 57
+a1 38
+a1 4c
+a1 39
+a1 d1
+a1 0f
+a1 83
+a1 6d
+a1 00
+a1 00
+a1 00
+a1 49
+a1 89
+a1 c8
+a1 48
+a1 b8
+a1 04
+a1 00
+a1 00
+a1 00
+a1 00
+a1 00
+a1 00
+a1 00
+a1 4c
+a1 0f
+a1 af
+a1 c0
+a1 4d
+a1 8b
+a1 5f
+a1 28
+a1 4c
+a1 89
+a1 df
+a1 4c
+a1 01
+a1 c7
+a1 8b
+a1 07
+a1 4d
+a1 8b
+a1 5f
+a1 30
+a1 4c
+a1 89
+a1 df
+a1 4c
+a1 01
+a1 c7
+a1 8b
+a1 17
+a1 48
+a1 83
+a1 fa
+a1 1c
+a1 0f
+a1 82
+a1 31
+a1 00
+a1 00
+a1 00
+a1 48
+a1 89
+a1 c7
+a1 48
+a1 b8
+a1 04
+a1 00
+a1 00
+a1 00
+a1 00
+a1 00
+a1 00
+a1 00
+a1 48
+a1 0f
+a1 af
+a1 f8
+a1 4d
+a1 8b
+a1 5f
+a1 20
+a1 49
+a1 01
+a1 fb
+a1 45
+a1 8b
+a1 0b
+a1 4c
+a1 89
+a1 c8
+a1 48
+a1 29
+a1 d0
+a1 48
+a1 83
+a1 e8
+a1 04
+a1 4d
+a1 8b
+a1 5f
+a1 18
+a1 4c
+a1 89
+a1 df
+a1 48
+a1 01
+a1 d7
+a1 89
+a1 07
+a1 48
+a1 83
+a1 c1
+a1 01
+a1 e9
+a1 8a
+a1 ff
+a1 ff
+a1 ff
+a1 c3
+FF
+
 ; H_1E: emit auto-ret for the last handler, then resolve fixups
 40 1e
 30 45 c3
 41 e0  ; emit 0xC3 (RET) as auto-ret for last handler
 30 45 cc
 41 e0  ; SENTINEL INT3 before fixup
-41 63  ; resolve all forward-jump fixups
+41 fe  ; resolve forward fixups via native H_FE
 FF      ; return to H_CB
 
 ; H_CB: EOF finalizer (called from H_CC)
@@ -610,6 +819,12 @@ FF      ; return to H_CC
 40 cc
 41 cb  ; call H_CB
 FF      ; return to H_C3 after scan
+
+; H_A8: emit raw byte from state_50 (0xA0 inline hex arg)
+40 a8
+60 45 50
+41 e0
+FF
 
 ; H_E0: emit byte from state_45 -> [state_03 + state_0E], advance state_0E
 40 e0
@@ -656,9 +871,9 @@ FF
 66 0e
 FF
 
-; H_E2: emit stGet(RAX, state_46) = 4D 8B 87 disp32  (7 bytes)
+; H_E2: emit stGet(RAX, state_46) = 49 8B 87 disp32  (7 bytes)
 40 e2
-30 45 4d
+30 45 49
 41 e0
 30 45 8b
 41 e0
@@ -668,9 +883,9 @@ FF
 41 e4
 FF
 
-; H_EB: emit stGet(RDX, state_46) = 4D 8B 97 disp32  (7 bytes)
+; H_EB: emit stGet(RDX, state_46) = 49 8B 97 disp32  (7 bytes)
 40 eb
-30 45 4d
+30 45 49
 41 e0
 30 45 8b
 41 e0
@@ -700,25 +915,85 @@ FF
 61 0e 04
 FF
 
-; H_E7: state_4D = handler_table[state_50]  (reads 2-byte entry from table)
+; H_F9: state_4D = u32-LE at [state_48]
+40 f9
+80 49 48 00 ; b0
+80 4a 48 01 ; b1
+80 4b 48 02 ; b2
+80 4c 48 03 ; b3
+60 4d 49   ; acc = b0
+60 42 4a
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 4d 42
+60 42 4b
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 4d 42
+60 42 4c
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 4d 42
+FF
+
+; H_F7: state_49 = defined[state_50]
+40 f7
+60 47 50
+60 48 15
+68 48 47  ; defined_base + hh
+80 49 48 00
+FF
+
+; H_E7: state_4D = handler_table[state_50]  (u32 entry)
 40 e7
 60 47 50
 68 47 47
 68 47 47
 60 48 04
 68 48 47  ; state_48 = table_base + hh*4
-80 49 48 00 ; byte0
-80 4a 48 01 ; byte1
-68 4a 4a
-68 4a 4a
-68 4a 4a
-68 4a 4a
-68 4a 4a
-68 4a 4a
-68 4a 4a
-68 4a 4a
-68 49 4a
-60 4d 49   ; state_4D = offset = byte0 + byte1*256
+41 f9           ; state_4D = handler_table[hh]
 FF
 
 ; H_E6: record fixup: hh=state_50, patch_pos=state_0E, count=state_07
@@ -816,8 +1091,38 @@ FF
 30 41 00
 65 09 41
 71 40  ; not yet seen -> H_40 (first)
-; Not first: emit C3 (auto-ret for previous handler)
+; Not first: emit end for previous handler (H_00 -> Linux exit, else C3 ret)
+30 41 01
+65 50 41
+71 f6  ; hh==1 -> close emitted H_00 with exit
 30 45 c3
+41 e0
+70 41  ; -> H_41 record offset
+
+; H_F6: emit Linux exit at end of emitted H_00 (top enters via JMP, not CALL)
+40 f6
+; Linux exit: xor rdi,rdi; mov rax,60; syscall
+30 45 48
+41 e0
+30 45 31
+41 e0
+30 45 ff
+41 e0
+30 45 c7
+41 e0
+30 45 c0
+41 e0
+30 45 3c
+41 e0
+30 45 00
+41 e0
+30 45 00
+41 e0
+30 45 00
+41 e0
+30 45 0f
+41 e0
+30 45 05
 41 e0
 70 41  ; -> H_41 record offset
 
@@ -842,8 +1147,6 @@ FF
 41 e0
 30 45 00
 41 e0
-30 45 00
-41 e0
 30 45 0f
 41 e0
 30 45 05
@@ -858,6 +1161,12 @@ FF
 60 48 04
 68 48 47  ; table_base + hh*4
 55 48 0E        ; handler_table[hh] = state_0E
+; Mark handler hh as defined
+60 47 50
+60 48 15
+68 48 47  ; defined_base + hh
+30 45 01
+87 48 45        ; defined[hh] = 1
 FF
 
 ; H_32: opcode 0xFF - emit C3 (ret)
@@ -873,18 +1182,18 @@ FF
 41 e0
 30 45 b8
 41 e0
-; Decompose state_51 (vv) into byte0 and byte1, emit as LE64
-41 ed  ; state_4F=b0, state_47=b1
+; Decompose state_51 (vv) into 4 LE bytes, emit as imm64
+41 ed  ; state_4F=b0, state_47=b1, state_49=b2, state_4B=b3
 57 03 0E 4F
 66 0e
 57 03 0E 47
 66 0e
-; Bytes 2-7 of imm64 are zero (values fit in 16 bits)
+57 03 0E 49
+66 0e
+57 03 0E 4B
+66 0e
+; Bytes 4-7 of imm64 are zero
 30 45 00
-57 03 0E 45
-66 0e
-57 03 0E 45
-66 0e
 57 03 0E 45
 66 0e
 57 03 0E 45
@@ -938,19 +1247,20 @@ FF
 
 ; H_36: opcode 0x70 hh - emit JMP rel32 (E9 disp32)
 40 36
-41 e7  ; state_4D = handler_table[state_50]
-; If handler_table[hh]==0 it's a forward jump (handler not yet defined)
-30 41 00
-65 4d 41
-71 42  ; forward -> H_42
-; Backward jump: compute rel32 = target - (state_0E + 5)
-30 45 e9
-41 e0
-; state_4E = state_0E + 4  (end of instruction after disp32)
-60 4e 0e
-61 4e 04
-69 4d 4e  ; rel32 = target - end
-41 e5
+70 42  ; always forward fixup
+
+; H_FC: branch opcode already emitted — record forward fixup + zero placeholder
+40 fc
+41 e6  ; record fixup at rel32 field (state_0E)
+30 45 00
+57 03 0E 45
+66 0e
+57 03 0E 45
+66 0e
+57 03 0E 45
+66 0e
+57 03 0E 45
+66 0e
 FF
 
 ; H_42: forward JMP - emit E9, record fixup (rel32 pos), then placeholder
@@ -975,17 +1285,7 @@ FF
 30 41 00
 65 50 41
 71 36  ; hh==0 -> H_36 emit JMP
-41 e7
-30 41 00
-65 4d 41
-71 43
-30 45 e8
-41 e0
-60 4e 0e
-61 4e 04
-69 4d 4e
-41 e5
-FF
+70 43  ; always forward CALL fixup
 
 ; H_43: forward CALL - emit E8, record fixup (rel32 pos), then placeholder
 40 43
@@ -1005,19 +1305,7 @@ FF
 
 ; H_38: opcode 0x71 hh - emit JE rel32 (0F 84 disp32)
 40 38
-41 e7
-30 41 00
-65 4d 41
-71 44
-30 45 0f
-41 e0
-30 45 84
-41 e0
-60 4e 0e
-61 4e 04
-69 4d 4e
-41 e5
-FF
+70 44  ; always forward fixup
 
 ; H_44: forward JE - emit 0F 84 placeholder and record fixup
 40 44
@@ -1039,19 +1327,7 @@ FF
 
 ; H_9C: generic jcc rel32 emitter (state_F0 = x86 cond byte, 0x84/0x85/0x8C/0x8D/0x8E/0x8F/...)
 40 9c
-41 e7
-30 41 00
-65 4d 41
-71 9d
-30 45 0f
-41 e0
-60 45 f0
-41 e0
-60 4e 0e
-61 4e 04
-69 4d 4e
-41 e5
-FF
+70 9d  ; always forward fixup
 
 ; H_9D: forward generic jcc - emit 0F + cond placeholder and record fixup
 40 9d
@@ -1310,19 +1586,7 @@ FF
 
 ; H_78: opcode 0x72 hh - emit JNE rel32
 40 78
-41 e7
-30 41 00
-65 4d 41
-71 7d
-30 45 0f
-41 e0
-30 45 85
-41 e0
-60 4e 0e
-61 4e 04
-69 4d 4e
-41 e5
-FF
+70 7d  ; always forward fixup
 
 ; H_7D: forward JNE - emit 0F 85 placeholder and record fixup
 40 7d
@@ -1344,19 +1608,7 @@ FF
 
 ; H_79: opcode 0x75 hh - emit JBE rel32
 40 79
-41 e7
-30 41 00
-65 4d 41
-71 7e
-30 45 0f
-41 e0
-30 45 86
-41 e0
-60 4e 0e
-61 4e 04
-69 4d 4e
-41 e5
-FF
+70 7e  ; always forward fixup
 
 ; H_7E: forward JBE - emit 0F 86 placeholder and record fixup
 40 7e
@@ -1378,19 +1630,7 @@ FF
 
 ; H_7A: opcode 0x77 hh - emit JB rel32
 40 7a
-41 e7
-30 41 00
-65 4d 41
-71 7f
-30 45 0f
-41 e0
-30 45 82
-41 e0
-60 4e 0e
-61 4e 04
-69 4d 4e
-41 e5
-FF
+70 7f  ; always forward fixup
 
 ; H_7F: forward JB - emit 0F 82 placeholder and record fixup
 40 7f
@@ -1412,19 +1652,7 @@ FF
 
 ; H_7B: opcode 0x78 hh - emit JAE rel32
 40 7b
-41 e7
-30 41 00
-65 4d 41
-71 80
-30 45 0f
-41 e0
-30 45 83
-41 e0
-60 4e 0e
-61 4e 04
-69 4d 4e
-41 e5
-FF
+70 80  ; always forward fixup
 
 ; H_80: forward JAE - emit 0F 83 placeholder and record fixup
 40 80
@@ -1446,19 +1674,7 @@ FF
 
 ; H_7C: opcode 0x7A hh - emit JA rel32
 40 7c
-41 e7
-30 41 00
-65 4d 41
-71 81
-30 45 0f
-41 e0
-30 45 87
-41 e0
-60 4e 0e
-61 4e 04
-69 4d 4e
-41 e5
-FF
+70 81  ; always forward fixup
 
 ; H_81: forward JA - emit 0F 87 placeholder and record fixup
 40 81
@@ -2204,20 +2420,73 @@ FF
 60 48 47
 68 48 48
 68 48 48 ; state_48 = i*4 (recomputed)
-; Read patch_pos from fixup_pos[i]
+; Read patch_pos u32 from fixup_pos[i] into state_4A (keep state_4D=target)
 60 49 06
 68 49 48  ; state_49 = pos_base + i*4
-80 4a 49 00
-80 4b 49 01
-68 4b 4b
-68 4b 4b
-68 4b 4b
-68 4b 4b
-68 4b 4b
-68 4b 4b
-68 4b 4b
-68 4b 4b
-68 4a 4b  ; patch_pos
+60 48 49  ; state_48 = &fixup_pos[i]
+80 49 48 00 ; b0
+80 4a 48 01 ; b1
+80 4b 48 02 ; b2
+80 4c 48 03 ; b3
+60 4a 49   ; acc = b0
+60 42 4a
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 4a 42
+60 42 4b
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 4a 42
+60 42 4c
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 42 42
+68 4a 42
+; Skip fixups in startup blob (already final); state_0A = startup length
+30 0a 1c
+65 4a 0a
+77 fd  ; patch_pos < startup_len -> skip
 ; rel32 = target - (patch_pos + 4)
 60 4e 4a
 61 4e 04  ; state_4E = patch_pos + 4
@@ -2225,10 +2494,13 @@ FF
 ; Write rel32 u32 at write_base + patch_pos
 60 4c 03
 68 4c 4a  ; state_4C = write_base + patch_pos
-60 50 4c  ; state_50 = address (for H_74)
-60 51 4d  ; state_51 = value (rel32, for H_74)
-41 74         ; emit mov [rdx], eax to write rel32
+55 4C 4D        ; [state_4C] = rel32 in state_4D
 ; i++, loop
+66 47
+70 64
+
+; H_FD: skip unresolved fixup target, continue loop
+40 fd
 66 47
 70 64
 

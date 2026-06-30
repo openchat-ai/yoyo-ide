@@ -23,6 +23,7 @@ function parse(text){
     const args=p.slice(1).map(x=>{
       if(x[0]==='s'){const b=[];for(let i=1;i<x.length;i+=2)b.push(parseInt(x.substr(i,2),16)||0);const B=Buffer.from(b);return{t:'s',v:B.toString('utf8'),raw:B};}
       if(op===0xA0){return{t:'h',v:x};}
+      if(op===0xA1){return{t:'n',v:parseInt(x,16)||0};}
       return{t:'n',v:parseInt(x,16)||0};
     });
     if(op===0xFF){}
@@ -47,6 +48,11 @@ function analyze(tokens){
 
 function compile(src,opts={}){
   const target=(opts.target||'win').toLowerCase();
+  const backend=(opts.backend||'x64').toLowerCase();
+  if(backend!=='x64'){
+    const {resolveBackend}=require('./backends/registry.js');
+    return resolveBackend(backend).compile(src,{...opts,target});
+  }
   return target==='linux'?compileLinux(src):compileWin(src);
 }
 
@@ -189,95 +195,8 @@ function compileWin(src){
 
 function compileLinux(src){
   const prog=analyze(parse(src));
-  const strs=Object.values(prog.strings);let sOff=16;const strPos=[];
-  for(const s of strs){strPos.push(sOff);sOff+=4+s.text.length+1;}
-
-  const elf=new ELF();
-  elf.setCode(Buffer.alloc(TEXT_VS,0x90));elf.setData(Buffer.alloc(1,0));elf.build();
-  const dr=elf.dataRVA;
-
-  const code=new E.Buf();code.labels={};code.fixups=[];code.dataFixups=[];
-  code.label=n=>{code.labels[n]=code.tell();};
-  code.jmp32=n=>{E.jmp_rel(code,0);code.fixups.push({p:code.tell()-4,n});};
-  code.jcc32=(cc,n)=>{E.jcc32(code,cc,0);code.fixups.push({p:code.tell()-4,n});};
-
-  const linux=makeLinuxEmit(code,dr,strs,strPos);
-  const STARTUP_MAX=128;
-  while(code.tell()<STARTUP_MAX)code.u8(0x90);
-
-  function emitExitAligned() {
-    code.u8(0x48); code.u8(0x83); code.u8(0xe4); code.u8(0xf0);
-    linux.emitExit();
-  }
-
-  for(const op of prog.top)emitLinux(op);
-  emitExitAligned();
-  for(const h of Object.keys(prog.handlers).map(k=>+k).sort((a,b)=>a-b)){
-    code.label('H'+h);for(const op of prog.handlers[h])emitLinux(op);E.ret(code);
-  }
-  while(code.tell()<TEXT_VS)code.u8(0x90);
-
-  const dataRva=CODE_RVA+alignS(code.tell());
-  const startup=buildLinuxStartup(dataRva,STARTUP_MAX);
-  startup.copy(code.b,0);
-  elf.entry=CODE_RVA;
-
-  function emitLinux(op){
-    const a=op.args,o=op.op;
-    if(o===0x30){linux.stSet(a[0].v,a[1]?a[1].v:0);}
-    else if(o===0x31||o===0x33||o===0x32){}
-    else if(o===0x40){code.label('H'+a[0].v);}
-    else if(o===0x41){E.call_rel(code,0);code.fixups.push({p:code.tell()-4,n:'H'+a[0].v});}
-    else if(o===0x50){linux.emitLoadFile(a[0].v,a[1].v);}
-    else if(o===0x51){linux.emitWriteFile(a[0].v,a[1].v,a[2]?a[2].v:0);}
-    else if(o===0x60){linux.stGet(RAX,a[1].v);linux.stPut(a[0].v,RAX);}
-    else if(o===0x61){linux.stGet(RAX,a[0].v);E.add_ri(code,RAX,a[1].v);linux.stPut(a[0].v,RAX);}
-    else if(o===0x62){linux.stGet(RAX,a[0].v);E.sub_ri(code,RAX,a[1].v);linux.stPut(a[0].v,RAX);}
-    else if(o===0x63){linux.stGet(RAX,a[0].v);linux.stGet(RDX,a[1].v);E.imul_rr(code,RAX,RDX);linux.stPut(a[0].v,RAX);}
-    else if(o===0x66){linux.stGet(RAX,a[0].v);E.add_ri(code,RAX,1);linux.stPut(a[0].v,RAX);}
-    else if(o===0x67){linux.stGet(RAX,a[0].v);E.sub_ri(code,RAX,1);linux.stPut(a[0].v,RAX);}
-    else if(o===0x68){linux.stGet(RAX,a[0].v);linux.stGet(RDX,a[1].v);E.add_rr(code,RAX,RDX);linux.stPut(a[0].v,RAX);}
-    else if(o===0x69){linux.stGet(RAX,a[0].v);linux.stGet(RDX,a[1].v);E.sub_rr(code,RAX,RDX);linux.stPut(a[0].v,RAX);}
-    else if(o===0x65){linux.stGet(RAX,a[0].v);linux.stGet(RDX,a[1].v);E.cmp_rr(code,RAX,RDX);}
-    else if(o===0x70){code.jmp32('H'+a[0].v);}
-    else if(o===0x71){code.jcc32(0,'H'+a[0].v);}
-    else if(o===0x72){code.jcc32(1,'H'+a[0].v);}
-    else if(o===0x82){code.jcc32(2,'H'+a[0].v);}
-    else if(o===0x83){code.jcc32(5,'H'+a[0].v);}
-    else if(o===0x73){code.jcc32(2,'H'+a[0].v);}
-    else if(o===0x74){code.jcc32(3,'H'+a[0].v);}
-    else if(o===0x75){code.jcc32(4,'H'+a[0].v);}
-    else if(o===0x76){code.jcc32(5,'H'+a[0].v);}
-    else if(o===0x77){code.jcc32(6,'H'+a[0].v);}
-    else if(o===0x78){code.jcc32(7,'H'+a[0].v);}
-    else if(o===0x79){code.jcc32(8,'H'+a[0].v);}
-    else if(o===0x7A){code.jcc32(9,'H'+a[0].v);}
-    else if(o===0x80){linux.stGet(RDX,a[1].v);code.u8(0x0F);code.u8(0xB6);var _d=a[2]?a[2].v:0;if(_d===0&&2!==5)code.u8(0x02);else if(_d>=-128&&_d<=127){code.u8(0x42);code.u8(_d&255);}else{code.u8(0x82);code.u32(_d);}linux.stPut(a[0].v,RAX);}
-    else if(o===0x81){E.mov_ri(code,RAX,BigInt(a[1].v));linux.stGet(RDX,a[0].v);E.mov_mr(code,RDX,a[2]?a[2].v:0,RAX,true);}
-    else if(o===0x84){linux.stGet(RDI,a[0].v);linux.ld(RSI,a[1].v);E.mov_ri(code,RCX,BigInt(a[2].v));code.u8(0xF3);code.u8(0xA4);}
-    else if(o===0x85){linux.stGet(RDI,a[0].v);linux.stGet(RSI,a[1].v);linux.stGet(RCX,a[2].v);code.u8(0xF3);code.u8(0xA4);}
-    else if(o===0x55){linux.stGet(RDX,a[0].v);linux.stGet(RAX,a[1].v);code.u8(0x89);code.u8(0x02);}
-    else if(o===0x57){linux.stGet(RDX,a[0].v);linux.stGet(R8,a[1].v);E.add_rr(code,RDX,R8);linux.stGet(RAX,a[2].v);code.u8(0x88);code.u8(0x02);}
-    else if(o===0x87){linux.stGet(RDX,a[0].v);linux.stGet(RAX,a[1].v);code.u8(0x88);code.u8(0x02);}
-    else if(o===0xFF){E.ret(code);}
-    else if(o===0x20){linux.emitAlloc(a[0].v,a[1].v);}
-    else if(o===0xA0){
-      const hex=a[0]?a[0].v:'';
-      for(let i=0;i<hex.length;i+=2){const b=parseInt(hex.substr(i,2),16);if(!isNaN(b))code.u8(b);}
-    }
-  }
-
-  for(const f of code.fixups){const t=code.labels[f.n];if(t!==undefined)code.b.writeInt32LE(t-(f.p+4),f.p);}
-
-  const fixDR=CODE_RVA+alignS(code.tell());
-  for(const f of code.dataFixups){code.b.writeInt32LE(fixDR+f.o-f.instrEnd,f.dispPos);}
-
-  const total=Buffer.alloc(code.tell(),0);code.b.slice(0,code.tell()).copy(total,0);
-  const data=Buffer.alloc(0x10000+STATE_BUF_OFF+0x20000,0);
-  data.writeUInt32LE(strs.length,0);
-  for(let i=0;i<strs.length;i++){const off=strPos[i];const tb=Buffer.from(strs[i].text+'\0','ascii');data.writeUInt32LE(strs[i].text.length,off);tb.copy(data,off+4);}
-  Buffer.from('\n\0','ascii').copy(data,sOff);for(const b of prog.blobs)b.data.copy(data,b.off);
-  elf.setCode(total);elf.setData(data);return elf.build();
+  const {compileFromAnalyzed}=require('./backends/linux-emit-core.js');
+  return compileFromAnalyzed(prog);
 }
 
 module.exports={compile,parse,analyze};
@@ -286,16 +205,19 @@ if(require.main===module){(async()=>{
   const fs=require('fs');
   const args=process.argv.slice(2);
   let target='win';
+  let backend='x64';
   const rest=[];
   for(let i=0;i<args.length;i++){
     if(args[i].startsWith('--target=')){target=args[i].slice(9).toLowerCase();}
     else if(args[i]==='--target'&&args[i+1]){target=args[i+1].toLowerCase();i++;}
+    else if(args[i].startsWith('--backend=')){backend=args[i].slice(10).toLowerCase();}
+    else if(args[i]==='--backend'&&args[i+1]){backend=args[i+1].toLowerCase();i++;}
     else rest.push(args[i]);
   }
   const ky=fs.readFileSync(rest[0],'utf8');
-  const exe=compile(ky,{target});
+  const exe=compile(ky,{target,backend});
   const out=rest[1]||rest[0].replace(/\.(ty|ky)$/,'')+(target==='linux'?'':'.exe');
   fs.writeFileSync(out,exe);
   fs.chmodSync(out,0o755);
-  console.log(`Compiled [${target}] to ${out} (${exe.length} bytes)`);
+  console.log(`Compiled [${target}/${backend}] to ${out} (${exe.length} bytes)`);
 })();}

@@ -1,22 +1,29 @@
 #!/usr/bin/env bash
 # Native Linux bootstrap (no Wine). Requires Node.js only.
+# TIR_BOOTSTRAP=1 builds gen1 via --backend=tir-x64 (M2 byte-match with x64).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 STAGES="${1:-3}"
+TIR_BOOTSTRAP="${TIR_BOOTSTRAP:-0}"
 TMP_DIR="$(mktemp -d /tmp/yoyo-native-bs-XXXXXX)"
 cleanup() { rm -f "$ROOT_DIR/input.ky" "$ROOT_DIR/output" "$ROOT_DIR/output.exe"; rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
-echo "=== yoyo native Linux bootstrap ==="
+echo "=== yoyo native Linux bootstrap (TIR_BOOTSTRAP=${TIR_BOOTSTRAP}) ==="
 
 echo "[1] node yoyo-gen.js --target=linux"
 node src/yoyo-gen.js --target=linux >/dev/null
 
-echo "[2] node yoyo.js --target=linux -> build/yoyo (gen1)"
-node src/yoyo.js --target=linux projects/yoyo.ty build/yoyo
+GEN1_BACKEND="x64"
+if [[ "$TIR_BOOTSTRAP" == "1" ]]; then
+  GEN1_BACKEND="tir-x64"
+fi
+
+echo "[2] node yoyo.js --backend=${GEN1_BACKEND} --target=linux -> build/yoyo (gen1)"
+node src/yoyo.js --backend="${GEN1_BACKEND}" --target=linux projects/yoyo.ty build/yoyo
 
 run_gen() {
   local label="$1"
@@ -63,6 +70,12 @@ fi
 chmod +x "$TMP_DIR/gen2.elf"
 run_gen "gen3" "$TMP_DIR/gen2.elf"
 
-cmp -s "$TMP_DIR/gen2.elf" "$TMP_DIR/gen3.elf"
-echo "gen2 vs gen3: PASS (byte-identical)"
-echo "bootstrap-native: PASS"
+if cmp -s "$TMP_DIR/gen2.elf" "$TMP_DIR/gen3.elf"; then
+  echo "gen2 vs gen3: PASS (byte-identical)"
+  echo "bootstrap-native: PASS"
+else
+  DIFFS=$(cmp -l "$TMP_DIR/gen2.elf" "$TMP_DIR/gen3.elf" 2>/dev/null | wc -l || true)
+  echo "gen2 vs gen3: FAIL ($DIFFS differing byte pairs)"
+  echo "bootstrap-native: FAIL (Stage 3 — see docs/PENDING.md)"
+  exit 1
+fi

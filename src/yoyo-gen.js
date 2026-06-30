@@ -5,8 +5,9 @@ const E    = require('./encode-x64.js');
 const { PE } = require('./pe-builder.js');
 const { ELF, BASE } = require('./elf-builder.js');
 const { STATE_TARGET, ELF_TEXT_FILE_OFF, PE_TEXT_FILE_OFF } = require('./platform-config.js');
-const { buildLinuxOutputStartup } = require('./linux-runtime.js');
+const { buildLinuxOutputStartup, buildLinuxFixupResolver } = require('./linux-runtime.js');
 const { appendLinuxEmitHandlers } = require('./linux-self-emit.js');
+const { blobHandlers } = require('./blob-handlers.js');
 
 function parseTarget(argv) {
   for (let i = 0; i < argv.length; i++) {
@@ -123,6 +124,30 @@ const LDB  = (d, s, o) => '80 ' + hx(d) + ' ' + hx(s) + ' ' + hx(o || 0);
 const RET  = ()        => 'FF';
 const STR  = s         => '12 s' + Buffer.from(s + '\0', 'ascii').toString('hex');
 
+function emitNativeHandler(handlerId, blob, comment) {
+  C(comment || ('H_' + hx(handlerId) + ': native blob (' + blob.length + ' bytes)'));
+  L(H(handlerId));
+  for (let i = 0; i < blob.length; i++) {
+    L('a1 ' + hx(blob[i], 2));
+  }
+  L(RET());
+  B();
+}
+
+// Emit yoyo lines: u32 LE load from [state_addr] into state_dst (clobbers 0x42, 0x49-0x4C).
+function emitLoadU32LE(dst, addr) {
+  L(LDB(0x49, addr, 0) + ' ; b0');
+  L(LDB(0x4A, addr, 1) + ' ; b1');
+  L(LDB(0x4B, addr, 2) + ' ; b2');
+  L(LDB(0x4C, addr, 3) + ' ; b3');
+  L(GET(dst, 0x49) + '   ; acc = b0');
+  for (const [slot, shifts] of [[0x4A, 8], [0x4B, 16], [0x4C, 24]]) {
+    L(GET(0x42, slot));
+    for (let i = 0; i < shifts; i++) L(ADDV(0x42, 0x42));
+    L(ADDV(dst, 0x42));
+  }
+}
+
 // ════════════════════════════════════════════════════════════════════════════════
 // YOYO SOURCE GENERATION
 // ════════════════════════════════════════════════════════════════════════════════
@@ -198,11 +223,14 @@ L(ADD(0x03, tplTextOff));
 C('Allocate handler offset table (256 entries x4 bytes = 1024) -> state_04');
 L('20 04 400');
 
-C('Allocate fixup hh array (max 256 fixups x4 bytes) -> state_05');
-L('20 05 400');
+C('Allocate fixup hh array (max 1024 fixups x4 bytes) -> state_05');
+L('20 05 1000');
 
 C('Allocate fixup patch-position array -> state_06');
-L('20 06 400');
+L('20 06 1000');
+
+C('Allocate defined-handler bitmap (256 bytes, mmap-zeroed) -> state_15');
+L('20 15 100');
 
 C('Initialize emitter state: fixup_count=0, first_handler_flag=0');
 L(SET(0x07, 0)  + ' ; fixup_count = 0');
@@ -213,6 +241,8 @@ L(GET(0x4C, 0x03));
 L('84 4C ' + hx(STARTUP_BLOB_OFF, 4) + ' ' + hx(outputStartup.length, 2));
 L(ADD(0x0E, outputStartup.length));
 
+const HANDLER_MAP_OFF = 0xFE00;
+
 C('Run scanner -> emitter');
 L('50 0A 00');
 L(GET(0x0C, 0x0A));
@@ -220,6 +250,17 @@ L(GET(0x0D, 0x0B));
 L(ADDV(0x0D, 0x0C));
 L(SET(0x09, 1) + ' ; suppress H_31 first-handler exit prologue during scan');
 L(CH(1)  + ' ; call H_01 main scan loop');
+
+C('Snapshot handler offset table + final code_offset into output data (blob extraction)');
+L(GET(0x47, 0x04));
+L(GET(0x48, 0x08));
+L(ADD(0x48, HANDLER_MAP_OFF));
+L(SET(0x53, 0x400));
+L('85 48 47 53');
+L(GET(0x48, 0x08));
+L(ADD(0x48, HANDLER_MAP_OFF + 0x400));
+L(GET(0x47, 0x0E));
+L('55 48 47');
 
 C('Patch embedded blobs into output ELF data section (bootstrap self-hosting)');
 L(GET(0x47, 0x02));
@@ -303,6 +344,7 @@ L(SET(0x41, 2)); L(CMP(0x40, 0x41)); L(JE(0x22) + ' ; state 2 -> H_22');
 L(SET(0x41, 3)); L(CMP(0x40, 0x41)); L(JE(0x23) + ' ; state 3 -> H_23');
 L(SET(0x41, 4)); L(CMP(0x40, 0x41)); L(JE(0x24) + ' ; state 4 -> H_24');
 L(SET(0x41, 5)); L(CMP(0x40, 0x41)); L(JE(0x25) + ' ; state 5 -> H_25');
+L(SET(0x41, 6)); L(CMP(0x40, 0x41)); L(JE(0xB1) + ' ; state 6 -> H_B1 (A0 hex emit)');
 L(SET(0x10, 0) + ' ; unknown state, reset');
 L(JMP(0x01));
 B();
@@ -355,6 +397,8 @@ C('Opcode 0x13 blob lines: skip rest of line (hex embedded at compile time)');
 L(SET(0x41, 0x13)); L(CMP(0x13, 0x41)); L(JE(0x14) + ' ; -> H_14 skip line');
 C('Opcode 0x12 string defs: skip rest of line (embedded at compile time)');
 L(SET(0x41, 0x12)); L(CMP(0x13, 0x41)); L(JE(0x14) + ' ; -> H_14 skip line');
+C('Opcode 0xA0 raw hex: inline emit bytes from rest of line');
+L(SET(0x41, 0xA0)); L(CMP(0x13, 0x41)); L(JE(0xB0) + ' ; -> H_B0 A0 mode');
 C('LF/CR/; -> emit immediately (no args)');
 L(SET(0x41, 0x0A)); L(CMP(0x0F, 0x41)); L(JE(0x30) + ' ; LF -> emit');
 L(SET(0x41, 0x0D)); L(CMP(0x0F, 0x41)); L(JE(0x30) + ' ; CR -> emit');
@@ -614,8 +658,15 @@ B();
 
 C('H_5D: opcode 0x85 - emit REP MOVSB (state-to-state memcpy)');
 L(H(0x5D));
-L(SET(0x41, 0x85)); L(CMP(0x40, 0x41)); L(JNE(0x4C));
+L(SET(0x41, 0x85)); L(CMP(0x40, 0x41)); L(JNE(0xBD));
 L(CH(0x8D) + '  ; opcode 0x85: emit state-to-state memcpy');
+L(JMP(0x4C));
+B();
+
+C('H_BD: opcode 0xA1 - emit one raw byte from numeric arg (meta-compile)');
+L(H(0xBD));
+L(SET(0x41, 0xA1)); L(CMP(0x40, 0x41)); L(JNE(0x4C));
+L(CH(0xA8) + '  ; opcode 0xA1: inline byte emit');
 L(JMP(0x4C));
 B();
 
@@ -667,6 +718,45 @@ L(SET(0x41, 1)); L(CMP(0x14, 0x41)); L(JE(0x2C) + ' ; arg_index==1 -> H_2C');
 L(JMP(0x2D));
 B();
 
+C('H_B0: enter A0 inline hex emit mode (state 6)');
+L(H(0xB0));
+L(SET(0x10, 6) + ' ; state = 6');
+L(SET(0x11, 0));
+L(SET(0x12, 0));
+L(JMP(0x01));
+B();
+
+C('H_B1: state 6 - read hex nibbles, emit each complete byte via H_E0');
+L(H(0xB1));
+L(CMP(0x0C, 0x0D));
+L(JAE(0xB2) + '  ; EOF -> finish A0 line');
+L(LDB(0x0F, 0x0C, 0) + ' ; read byte');
+L(INC(0x0C));
+L(SET(0x41, 0x0A)); L(CMP(0x0F, 0x41)); L(JE(0xB2) + '  ; LF -> done');
+L(SET(0x41, 0x0D)); L(CMP(0x0F, 0x41)); L(JE(0xB2) + '  ; CR -> done');
+L(SET(0x41, 0x3B)); L(CMP(0x0F, 0x41)); L(JE(0xB2) + '  ; ; -> done');
+L(SET(0x41, 0x20)); L(CMP(0x0F, 0x41)); L(JE(0x01) + '  ; space -> skip');
+L(SET(0x41, 0x09)); L(CMP(0x0F, 0x41)); L(JE(0x01) + '  ; tab -> skip');
+L(SET(0x41, 0x30)); L(CMP(0x0F, 0x41)); L(JB(0x01) + '  ; non-hex -> skip');
+L(SET(0x41, 0x66)); L(CMP(0x0F, 0x41)); L(JA(0x01) + '  ; non-hex -> skip');
+L(CH(0x0C) + '  ; accumulate nibble');
+L(SET(0x41, 2)); L(CMP(0x12, 0x41)); L(JNE(0x01) + '  ; wait for 2 nibbles');
+L(GET(0x45, 0x11));
+L(CH(0xE0) + '  ; emit byte');
+L(SET(0x11, 0));
+L(SET(0x12, 0));
+L(JMP(0x01));
+B();
+
+C('H_B2: end of A0 line - reset scanner state');
+L(H(0xB2));
+L(SET(0x10, 0));
+L(SET(0x11, 0));
+L(SET(0x12, 0));
+L(SET(0x14, 0));
+L(JMP(0x01));
+B();
+
 // ── H_0C/H_0D: hex digit converter + nibble accumulator ──────────────────────
 C('H_0C: convert hex char in state_0F to nibble, accumulate into state_11');
 L(H(0x0C));
@@ -691,12 +781,21 @@ L(RET());
 B();
 
 // ── H_1E: EOF handler ─────────────────────────────────────────────────────────
+if (isLinux) {
+  emitNativeHandler(0xFE, buildLinuxFixupResolver(outputStartup.length),
+    'H_FE: native forward-fixup resolver (deterministic; replaces H_63 loop)');
+}
+
 C('H_1E: emit auto-ret for the last handler, then resolve fixups');
 L(H(0x1E));
 L(SET(0x45, 0xC3));
 L(CH(0xE0) + '  ; emit 0xC3 (RET) as auto-ret for last handler');
 L(SET(0x45, 0xCC)); L(CH(0xE0) + '  ; SENTINEL INT3 before fixup');
-L(CH(0x63) + '  ; resolve all forward-jump fixups');
+if (isLinux) {
+  L(CH(0xFE) + '  ; resolve forward fixups via native H_FE');
+} else {
+  L(CH(0x63) + '  ; resolve all forward-jump fixups');
+}
 L(RET() + '      ; return to H_CB');
 B();
 
@@ -720,6 +819,14 @@ B();
 //             state_4D=u32-value-to-emit, state_4E=rel32-end-pos
 //             state_47=disp-b0, state_49=disp-b1
 // ════════════════════════════════════════════════════════════════════════════════
+
+// ── Helper: H_A8 - emit byte(s) from opcode 0xA0 arg (state_50) ───────────────
+C('H_A8: emit raw byte from state_50 (0xA0 inline hex arg)');
+L(H(0xA8));
+L(GET(0x45, 0x50));
+L(CH(0xE0));
+L(RET());
+B();
 
 // ── Helper: H_E0 - emit one byte (state_45) to output code section ────────────
 C('H_E0: emit byte from state_45 -> [state_03 + state_0E], advance state_0E');
@@ -766,10 +873,10 @@ L(RET());
 B();
 
 // ── Helper: H_E2 - emit stGet(RAX, state[state_46]) (7 bytes) ────────────────
-// Encoding: REX(4D) 8B 87 disp32  (MOV RAX, [R15 + disp32])
-C('H_E2: emit stGet(RAX, state_46) = 4D 8B 87 disp32  (7 bytes)');
+// Encoding: REX(49) 8B 87 disp32  (MOV RAX, [R15 + disp32])
+C('H_E2: emit stGet(RAX, state_46) = 49 8B 87 disp32  (7 bytes)');
 L(H(0xE2));
-L(SET(0x45, 0x4D)); L(CH(0xE0));   // REX: W=1, R=1(RAX<8), B=1(R15>=8)
+L(SET(0x45, 0x49)); L(CH(0xE0));   // REX: W=1, R=0(RAX), B=1(R15>=8)
 L(SET(0x45, 0x8B)); L(CH(0xE0));   // MOV opcode
 L(SET(0x45, 0x87)); L(CH(0xE0));   // ModRM: mod=2, reg=0(RAX), rm=7(R15)
 L(CH(0xE1));                        // compute disp bytes
@@ -778,10 +885,10 @@ L(RET());
 B();
 
 // ── Helper: H_EB - emit stGet(RDX, state[state_46]) (7 bytes) ────────────────
-// Encoding: REX(4D) 8B 97 disp32  (MOV RDX, [R15 + disp32])
-C('H_EB: emit stGet(RDX, state_46) = 4D 8B 97 disp32  (7 bytes)');
+// Encoding: REX(49) 8B 97 disp32  (MOV RDX, [R15 + disp32])
+C('H_EB: emit stGet(RDX, state_46) = 49 8B 97 disp32  (7 bytes)');
 L(H(0xEB));
-L(SET(0x45, 0x4D)); L(CH(0xE0));
+L(SET(0x45, 0x49)); L(CH(0xE0));
 L(SET(0x45, 0x8B)); L(CH(0xE0));
 L(SET(0x45, 0x97)); L(CH(0xE0));   // ModRM: mod=2, reg=2(RDX), rm=7(R15)
 L(CH(0xE1));
@@ -811,21 +918,32 @@ L(ADD(0x0E, 4));
 L(RET());
 B();
 
+// ── Helper: H_F9 - load u32 LE from [state_48] into state_4D ─────────────────
+C('H_F9: state_4D = u32-LE at [state_48]');
+L(H(0xF9));
+emitLoadU32LE(0x4D, 0x48);
+L(RET());
+B();
+
+// ── Helper: H_F7 - defined[state_50] byte (0 = forward jump/call) ─────────────
+C('H_F7: state_49 = defined[state_50]');
+L(H(0xF7));
+L(GET(0x47, 0x50));
+L(GET(0x48, 0x15));
+L(ADDV(0x48, 0x47) + '  ; defined_base + hh');
+L(LDB(0x49, 0x48, 0));
+L(RET());
+B();
+
 // ── Helper: H_E7 - read handler offset (state_50 -> state_4D) ────────────────
-C('H_E7: state_4D = handler_table[state_50]  (reads 2-byte entry from table)');
+C('H_E7: state_4D = handler_table[state_50]  (u32 entry)');
 L(H(0xE7));
 L(GET(0x47, 0x50));                 // state_47 = hh
 L(ADDV(0x47, 0x47));                // *2
 L(ADDV(0x47, 0x47));                // *4 = hh * 4 (byte offset in table)
 L(GET(0x48, 0x04));
 L(ADDV(0x48, 0x47) + '  ; state_48 = table_base + hh*4');
-L(LDB(0x49, 0x48, 0) + ' ; byte0');
-L(LDB(0x4A, 0x48, 1) + ' ; byte1');
-// state_4A * 256
-L(ADDV(0x4A, 0x4A)); L(ADDV(0x4A, 0x4A)); L(ADDV(0x4A, 0x4A)); L(ADDV(0x4A, 0x4A));
-L(ADDV(0x4A, 0x4A)); L(ADDV(0x4A, 0x4A)); L(ADDV(0x4A, 0x4A)); L(ADDV(0x4A, 0x4A));
-L(ADDV(0x49, 0x4A));
-L(GET(0x4D, 0x49) + '   ; state_4D = offset = byte0 + byte1*256');
+L(CH(0xF9) + '           ; state_4D = handler_table[hh]');
 L(RET());
 B();
 
@@ -936,8 +1054,28 @@ C('Handler 0 is the main driver: record offset only (no exit/ret preamble)');
 L(SET(0x41, 0)); L(CMP(0x50, 0x41)); L(JE(0x41) + '  ; hh==0 -> H_41 record only');
 C('Check first-handler flag (state_09)');
 L(SET(0x41, 0)); L(CMP(0x09, 0x41)); L(JE(0x40) + '  ; not yet seen -> H_40 (first)');
-C('Not first: emit C3 (auto-ret for previous handler)');
+C('Not first: emit end for previous handler (H_00 -> Linux exit, else C3 ret)');
+if (isLinux) {
+  L(SET(0x41, 1)); L(CMP(0x50, 0x41)); L(JE(0xF6) + '  ; hh==1 -> close emitted H_00 with exit');
+}
 L(SET(0x45, 0xC3)); L(CH(0xE0));
+L(JMP(0x41) + '  ; -> H_41 record offset');
+B();
+
+C('H_F6: emit Linux exit at end of emitted H_00 (top enters via JMP, not CALL)');
+L(H(0xF6));
+C('Linux exit: xor rdi,rdi; mov rax,60; syscall');
+L(SET(0x45, 0x48)); L(CH(0xE0));
+L(SET(0x45, 0x31)); L(CH(0xE0));
+L(SET(0x45, 0xFF)); L(CH(0xE0));
+L(SET(0x45, 0xC7)); L(CH(0xE0));
+L(SET(0x45, 0xC0)); L(CH(0xE0));
+L(SET(0x45, 0x3C)); L(CH(0xE0));
+L(SET(0x45, 0x00)); L(CH(0xE0));
+L(SET(0x45, 0x00)); L(CH(0xE0));
+L(SET(0x45, 0x00)); L(CH(0xE0));
+L(SET(0x45, 0x0F)); L(CH(0xE0));
+L(SET(0x45, 0x05)); L(CH(0xE0));
 L(JMP(0x41) + '  ; -> H_41 record offset');
 B();
 
@@ -951,7 +1089,6 @@ L(SET(0x45, 0xFF)); L(CH(0xE0));
 L(SET(0x45, 0xC7)); L(CH(0xE0));
 L(SET(0x45, 0xC0)); L(CH(0xE0));
 L(SET(0x45, 0x3C)); L(CH(0xE0));
-L(SET(0x45, 0x00)); L(CH(0xE0));
 L(SET(0x45, 0x00)); L(CH(0xE0));
 L(SET(0x45, 0x00)); L(CH(0xE0));
 L(SET(0x45, 0x00)); L(CH(0xE0));
@@ -978,6 +1115,12 @@ L(ADDV(0x47, 0x47)); L(ADDV(0x47, 0x47) + ' ; hh*4');
 L(GET(0x48, 0x04));
 L(ADDV(0x48, 0x47) + '  ; table_base + hh*4');
 L('55 48 0E' + '        ; handler_table[hh] = state_0E');
+C('Mark handler hh as defined');
+L(GET(0x47, 0x50));
+L(GET(0x48, 0x15));
+L(ADDV(0x48, 0x47) + '  ; defined_base + hh');
+L(SET(0x45, 1));
+L('87 48 45' + '        ; defined[hh] = 1');
 L(RET());
 B();
 
@@ -996,14 +1139,14 @@ C('  movabs rax, vv = 48 B8 <vv 8 bytes LE>  (10 bytes total)');
 L(H(0x33));
 L(SET(0x45, 0x48)); L(CH(0xE0));   // REX.W
 L(SET(0x45, 0xB8)); L(CH(0xE0));   // MOV RAX, imm64
-C('Decompose state_51 (vv) into byte0 and byte1, emit as LE64');
-L(CH(0xED) + '  ; state_4F=b0, state_47=b1');
+C('Decompose state_51 (vv) into 4 LE bytes, emit as imm64');
+L(CH(0xED) + '  ; state_4F=b0, state_47=b1, state_49=b2, state_4B=b3');
 L('57 03 0E 4F'); L(INC(0x0E));    // emit b0
 L('57 03 0E 47'); L(INC(0x0E));    // emit b1
-C('Bytes 2-7 of imm64 are zero (values fit in 16 bits)');
+L('57 03 0E 49'); L(INC(0x0E));    // emit b2
+L('57 03 0E 4B'); L(INC(0x0E));    // emit b3
+C('Bytes 4-7 of imm64 are zero');
 L(SET(0x45, 0));
-L('57 03 0E 45'); L(INC(0x0E));
-L('57 03 0E 45'); L(INC(0x0E));
 L('57 03 0E 45'); L(INC(0x0E));
 L('57 03 0E 45'); L(INC(0x0E));
 L('57 03 0E 45'); L(INC(0x0E));
@@ -1055,19 +1198,20 @@ L(RET());
 B();
 
 // ── H_36/H_42: opcode 0x70 hh - emit JMP rel32 ───────────────────────────────
-// Backward: E9 rel32 = 5 bytes
-// Forward:  E9 00000000 + fixup entry = 5 bytes
+// Always record forward fixup; H_63 patches at EOF (matches Node compileLinux).
 C('H_36: opcode 0x70 hh - emit JMP rel32 (E9 disp32)');
 L(H(0x36));
-L(CH(0xE7) + '  ; state_4D = handler_table[state_50]');
-C('If handler_table[hh]==0 it\'s a forward jump (handler not yet defined)');
-L(SET(0x41, 0)); L(CMP(0x4D, 0x41)); L(JE(0x42) + '  ; forward -> H_42');
-C('Backward jump: compute rel32 = target - (state_0E + 5)');
-L(SET(0x45, 0xE9)); L(CH(0xE0));   // emit E9 opcode
-C('state_4E = state_0E + 4  (end of instruction after disp32)');
-L(GET(0x4E, 0x0E)); L(ADD(0x4E, 4));
-L(SUBV(0x4D, 0x4E) + '  ; rel32 = target - end');
-L(CH(0xE5));
+L(JMP(0x42) + '  ; always forward fixup');
+B();
+
+C('H_FC: branch opcode already emitted — record forward fixup + zero placeholder');
+L(H(0xFC));
+L(CH(0xE6) + '  ; record fixup at rel32 field (state_0E)');
+L(SET(0x45, 0));
+L('57 03 0E 45'); L(INC(0x0E));
+L('57 03 0E 45'); L(INC(0x0E));
+L('57 03 0E 45'); L(INC(0x0E));
+L('57 03 0E 45'); L(INC(0x0E));
 L(RET());
 B();
 
@@ -1088,13 +1232,7 @@ C('H_37: opcode 0x41 hh - emit CALL rel32 (E8 disp32); hh==0 uses JMP (E9)');
 L(H(0x37));
 C('Handler 0 entry is emitted inline after top-level call site — emit JMP not CALL');
 L(SET(0x41, 0)); L(CMP(0x50, 0x41)); L(JE(0x36) + '  ; hh==0 -> H_36 emit JMP');
-L(CH(0xE7));
-L(SET(0x41, 0)); L(CMP(0x4D, 0x41)); L(JE(0x43));
-L(SET(0x45, 0xE8)); L(CH(0xE0));
-L(GET(0x4E, 0x0E)); L(ADD(0x4E, 4));
-L(SUBV(0x4D, 0x4E));
-L(CH(0xE5));
-L(RET());
+L(JMP(0x43) + '  ; always forward CALL fixup');
 B();
 
 C('H_43: forward CALL - emit E8, record fixup (rel32 pos), then placeholder');
@@ -1110,17 +1248,9 @@ L(RET());
 B();
 
 // ── H_38/H_44: opcode 0x71 hh - emit JE rel32 ────────────────────────────────
-// JE rel32 encoding: 0F 84 rel32 (6 bytes)
 C('H_38: opcode 0x71 hh - emit JE rel32 (0F 84 disp32)');
 L(H(0x38));
-L(CH(0xE7));
-L(SET(0x41, 0)); L(CMP(0x4D, 0x41)); L(JE(0x44));
-L(SET(0x45, 0x0F)); L(CH(0xE0));
-L(SET(0x45, 0x84)); L(CH(0xE0));
-L(GET(0x4E, 0x0E)); L(ADD(0x4E, 4));
-L(SUBV(0x4D, 0x4E));
-L(CH(0xE5));
-L(RET());
+L(JMP(0x44) + '  ; always forward fixup');
 B();
 
 C('H_44: forward JE - emit 0F 84 placeholder and record fixup');
@@ -1141,14 +1271,7 @@ B();
 // Future jcc opcodes only need a 7-line dispatcher that sets state_F0 and calls H_9C.
 C('H_9C: generic jcc rel32 emitter (state_F0 = x86 cond byte, 0x84/0x85/0x8C/0x8D/0x8E/0x8F/...)');
 L(H(0x9C));
-L(CH(0xE7));
-L(SET(0x41, 0)); L(CMP(0x4D, 0x41)); L(JE(0x9D));
-L(SET(0x45, 0x0F)); L(CH(0xE0));
-L(GET(0x45, 0xF0)); L(CH(0xE0));
-L(GET(0x4E, 0x0E)); L(ADD(0x4E, 4));
-L(SUBV(0x4D, 0x4E));
-L(CH(0xE5));
-L(RET());
+L(JMP(0x9D) + '  ; always forward fixup');
 B();
 
 C('H_9D: forward generic jcc - emit 0F + cond placeholder and record fixup');
@@ -1357,14 +1480,7 @@ B();
 // H_78: opcode 0x72 hh - emit JNE rel32 (0F 85 disp32)
 C('H_78: opcode 0x72 hh - emit JNE rel32');
 L(H(0x78));
-L(CH(0xE7));                                   // read handler offset -> state_4D
-L(SET(0x41, 0)); L(CMP(0x4D, 0x41)); L(JE(0x7D));  // forward -> H_7D
-L(SET(0x45, 0x0F)); L(CH(0xE0));              // backward: 0F 85 disp32
-L(SET(0x45, 0x85)); L(CH(0xE0));
-L(GET(0x4E, 0x0E)); L(ADD(0x4E, 4));
-L(SUBV(0x4D, 0x4E));
-L(CH(0xE5));
-L(RET());
+L(JMP(0x7D) + '  ; always forward fixup');
 B();
 
 C('H_7D: forward JNE - emit 0F 85 placeholder and record fixup');
@@ -1383,14 +1499,7 @@ B();
 // H_79: opcode 0x75 hh - emit JBE rel32 (0F 86 disp32)
 C('H_79: opcode 0x75 hh - emit JBE rel32');
 L(H(0x79));
-L(CH(0xE7));
-L(SET(0x41, 0)); L(CMP(0x4D, 0x41)); L(JE(0x7E));
-L(SET(0x45, 0x0F)); L(CH(0xE0));
-L(SET(0x45, 0x86)); L(CH(0xE0));
-L(GET(0x4E, 0x0E)); L(ADD(0x4E, 4));
-L(SUBV(0x4D, 0x4E));
-L(CH(0xE5));
-L(RET());
+L(JMP(0x7E) + '  ; always forward fixup');
 B();
 
 C('H_7E: forward JBE - emit 0F 86 placeholder and record fixup');
@@ -1409,14 +1518,7 @@ B();
 // H_7A: opcode 0x77 hh - emit JB rel32 (0F 82 disp32)
 C('H_7A: opcode 0x77 hh - emit JB rel32');
 L(H(0x7A));
-L(CH(0xE7));
-L(SET(0x41, 0)); L(CMP(0x4D, 0x41)); L(JE(0x7F));
-L(SET(0x45, 0x0F)); L(CH(0xE0));
-L(SET(0x45, 0x82)); L(CH(0xE0));
-L(GET(0x4E, 0x0E)); L(ADD(0x4E, 4));
-L(SUBV(0x4D, 0x4E));
-L(CH(0xE5));
-L(RET());
+L(JMP(0x7F) + '  ; always forward fixup');
 B();
 
 C('H_7F: forward JB - emit 0F 82 placeholder and record fixup');
@@ -1435,14 +1537,7 @@ B();
 // H_7B: opcode 0x78 hh - emit JAE rel32 (0F 83 disp32)
 C('H_7B: opcode 0x78 hh - emit JAE rel32');
 L(H(0x7B));
-L(CH(0xE7));
-L(SET(0x41, 0)); L(CMP(0x4D, 0x41)); L(JE(0x80));
-L(SET(0x45, 0x0F)); L(CH(0xE0));
-L(SET(0x45, 0x83)); L(CH(0xE0));
-L(GET(0x4E, 0x0E)); L(ADD(0x4E, 4));
-L(SUBV(0x4D, 0x4E));
-L(CH(0xE5));
-L(RET());
+L(JMP(0x80) + '  ; always forward fixup');
 B();
 
 C('H_80: forward JAE - emit 0F 83 placeholder and record fixup');
@@ -1461,14 +1556,7 @@ B();
 // H_7C: opcode 0x7A hh - emit JA rel32 (0F 87 disp32)
 C('H_7C: opcode 0x7A hh - emit JA rel32');
 L(H(0x7C));
-L(CH(0xE7));
-L(SET(0x41, 0)); L(CMP(0x4D, 0x41)); L(JE(0x81));
-L(SET(0x45, 0x0F)); L(CH(0xE0));
-L(SET(0x45, 0x87)); L(CH(0xE0));
-L(GET(0x4E, 0x0E)); L(ADD(0x4E, 4));
-L(SUBV(0x4D, 0x4E));
-L(CH(0xE5));
-L(RET());
+L(JMP(0x81) + '  ; always forward fixup');
 B();
 
 C('H_81: forward JA - emit 0F 87 placeholder and record fixup');
@@ -1820,14 +1908,15 @@ L(CH(0xE7) + '           ; state_4D = handler_table[hh] = target offset');
 C('Recompute i*4 (H_E7 trashes slot_0x48)');
 L(GET(0x48, 0x47));
 L(ADDV(0x48, 0x48)); L(ADDV(0x48, 0x48) + ' ; state_48 = i*4 (recomputed)');
-C('Read patch_pos from fixup_pos[i]');
+C('Read patch_pos u32 from fixup_pos[i] into state_4A (keep state_4D=target)');
 L(GET(0x49, 0x06));
 L(ADDV(0x49, 0x48) + '  ; state_49 = pos_base + i*4');
-L(LDB(0x4A, 0x49, 0));
-L(LDB(0x4B, 0x49, 1));
-L(ADDV(0x4B, 0x4B)); L(ADDV(0x4B, 0x4B)); L(ADDV(0x4B, 0x4B)); L(ADDV(0x4B, 0x4B));
-L(ADDV(0x4B, 0x4B)); L(ADDV(0x4B, 0x4B)); L(ADDV(0x4B, 0x4B)); L(ADDV(0x4B, 0x4B));
-L(ADDV(0x4A, 0x4B) + '  ; patch_pos');
+L(GET(0x48, 0x49) + '  ; state_48 = &fixup_pos[i]');
+emitLoadU32LE(0x4A, 0x48);
+C('Skip fixups in startup blob (already final); state_0A = startup length');
+L(SET(0x0A, outputStartup.length));
+L(CMP(0x4A, 0x0A));
+L(JB(0xFD) + '  ; patch_pos < startup_len -> skip');
 C('rel32 = target - (patch_pos + 4)');
 L(GET(0x4E, 0x4A));
 L(ADD(0x4E, 4) + '  ; state_4E = patch_pos + 4');
@@ -1835,10 +1924,14 @@ L(SUBV(0x4D, 0x4E) + '  ; state_4D = rel32');
 C('Write rel32 u32 at write_base + patch_pos');
 L(GET(0x4C, 0x03));
 L(ADDV(0x4C, 0x4A) + '  ; state_4C = write_base + patch_pos');
-L(GET(0x50, 0x4C) + '  ; state_50 = address (for H_74)');
-L(GET(0x51, 0x4D) + '  ; state_51 = value (rel32, for H_74)');
-L(CH(0x74) + '         ; emit mov [rdx], eax to write rel32');
+L('55 4C 4D' + '        ; [state_4C] = rel32 in state_4D');
 C('i++, loop');
+L(INC(0x47));
+L(JMP(0x64));
+B();
+
+C('H_FD: skip unresolved fixup target, continue loop');
+L(H(0xFD));
 L(INC(0x47));
 L(JMP(0x64));
 B();
@@ -1852,7 +1945,10 @@ B();
 // Write output file
 // ════════════════════════════════════════════════════════════════════════════════
 const outPath = path.join(__dirname, '..', 'projects', 'yoyo.ty');
-const content = lines.join('\n');
+let content = lines.join('\n');
+if (isLinux && process.env.YOYO_BLOB === '1') {
+  content = blobHandlers(content, path.join(__dirname, '..'));
+}
 fs.writeFileSync(outPath, content);
 console.log('Written ' + outPath + ' [' + target + ']');
 console.log('  ' + lines.length + ' lines, ' + content.length + ' bytes');
