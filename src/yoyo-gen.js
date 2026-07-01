@@ -26,11 +26,17 @@ const FUNCS      = ['ExitProcess','GetStdHandle','WriteFile','ReadFile',
                     'CreateFileA','GetFileSize','CloseHandle','VirtualAlloc'];
 const TEXT_VS    = 0x8000;   // .text virtual size (must fit emitted code)
 const CODE_RVA   = 0x1000;   // .text base RVA
-const IAT_BASE   = 0x5000;   // IAT base (= CODE_RVA + TEXT_VS)
+const IAT_BASE   = 0x9000;   // IAT base (= CODE_RVA + TEXT_VS = 0x1000 + 0x8000)
+const IAT_DISP_BASE = IAT_BASE - 0x1004; // disp32 base for IAT call: state_0E has already +2 for FF 15, plus 4 bytes of disp32 ahead
 
 // IAT entries for each API function
 const IAT = {};
 FUNCS.forEach((f, i) => { IAT[f] = IAT_BASE + i * 8; });
+// disp32 constant for [rip+disp32] IAT call when state_0E has already advanced
+// past the FF 15 prefix (+2) and we are emitting the 4-byte disp32 (+4 ahead).
+// IAT[V] - 0x1000 (RVA->image) - 6 (next-IP) = IAT[V] - 0x1006;
+// expressed as "base - state_0E_already_2" = (IAT[V] - 0x1006) + 2 = IAT[V] - 0x1004.
+const iatDisp = (fn) => IAT[fn] - 0x1004;
 
 // Data section offsets (embedded blob layout in compiler data section)
 const TEMPLATE_BLOB_OFF = 0x4000;
@@ -1608,11 +1614,11 @@ L(SET(0x45, 0x00)); L(CH(0xE0));  L(SET(0x45, 0x00)); L(CH(0xE0));
 L(SET(0x45, 0x00)); L(CH(0xE0));  L(SET(0x45, 0x00)); L(CH(0xE0));
 L(SET(0x45, 0x00)); L(CH(0xE0));  L(SET(0x45, 0x00)); L(CH(0xE0));
 C('call [rip + VirtualAlloc IAT]');
-C('  disp32 = 0x5038 - (0x1000 + state_0E + 6) = 0x4034 - state_0E');
+C('  disp32 = IAT[VirtualAlloc] - (0x1000 + state_0E + 6) = iatDisp(VirtualAlloc) - state_0E');
 L(SET(0x45, 0xFF)); L(CH(0xE0));   // FF 15 <disp32>
 L(SET(0x45, 0x15)); L(CH(0xE0));
-L(SET(0x4D, 0x4034));
-L(SUBV(0x4D, 0x0E) + '  ; disp32 = 0x4034 - state_0E');
+L(SET(0x4D, iatDisp('VirtualAlloc')));
+L(SUBV(0x4D, 0x0E) + '  ; disp32 = iatDisp(VirtualAlloc) - state_0E');
 L(CH(0xE5));                        // emit disp32
 L(GET(0x46, 0x50)); L(CH(0xE3));   // stPut(id, RAX)
 L(RET());
@@ -1653,7 +1659,7 @@ L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); // mov [rs
 C('call [CreateFileA IAT]');
 L(SET(0x45, 0xFF)); L(CH(0xE0));
 L(SET(0x45, 0x15)); L(CH(0xE0));
-L(SET(0x4D, 0x401C)); L(SUBV(0x4D, 0x0E) + '  ; disp = 0x401C - state_0E');
+L(SET(0x4D, iatDisp('CreateFileA'))); L(SUBV(0x4D, 0x0E) + '  ; disp = iatDisp(CreateFileA) - state_0E');
 L(CH(0xE5));
 L(RET());
 B();
@@ -1738,7 +1744,7 @@ C('mov rcx, r13; xor rdx,rdx; call GetFileSize');
 L(SET(0x45, 0x49)); L(CH(0xE0)); L(SET(0x45, 0x89)); L(CH(0xE0)); L(SET(0x45, 0xCD)); L(CH(0xE0)); // mov rcx, r13
 L(SET(0x45, 0x48)); L(CH(0xE0)); L(SET(0x45, 0x31)); L(CH(0xE0)); L(SET(0x45, 0xD2)); L(CH(0xE0)); // xor rdx, rdx
 L(SET(0x45, 0xFF)); L(CH(0xE0)); L(SET(0x45, 0x15)); L(CH(0xE0));  // call [GetFileSize]
-L(SET(0x4D, 0x4024)); L(SUBV(0x4D, 0x0E) + '  ; disp = 0x4024 - state_0E');
+L(SET(0x4D, iatDisp('GetFileSize'))); L(SUBV(0x4D, 0x0E) + '  ; disp = iatDisp(GetFileSize) - state_0E');
 L(CH(0xE5));
 C('mov r12, rax (file size)');
 L(SET(0x45, 0x49)); L(CH(0xE0)); L(SET(0x45, 0x89)); L(CH(0xE0)); L(SET(0x45, 0xC4)); L(CH(0xE0));
@@ -1754,7 +1760,7 @@ L(SET(0x45, 0x40)); L(CH(0xE0)); L(SET(0x45, 0)); L(CH(0xE0));
 L(SET(0x45, 0)); L(CH(0xE0)); L(SET(0x45, 0)); L(CH(0xE0));
 L(SET(0x45, 0)); L(CH(0xE0)); L(SET(0x45, 0)); L(CH(0xE0));
 L(SET(0x45, 0xFF)); L(CH(0xE0)); L(SET(0x45, 0x15)); L(CH(0xE0));  // call [VirtualAlloc]
-L(SET(0x4D, 0x4034)); L(SUBV(0x4D, 0x0E) + '  ; disp = 0x4034 - state_0E');
+L(SET(0x4D, iatDisp('VirtualAlloc'))); L(SUBV(0x4D, 0x0E) + '  ; disp = iatDisp(VirtualAlloc) - state_0E');
 L(CH(0xE5));
 C('stPut(id, RAX) = buffer, stPut(id+1, R12) = size');
 L(GET(0x46, 0x50)); L(CH(0xE3));   // stPut(id, RAX) = buffer
@@ -1778,12 +1784,12 @@ L('48 8D 4C 24 20'); L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); L(I
 L('48 C7 44 24 20 00 00 00 00'); L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E));
 L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); // mov [rsp+0x20], 0
 L(SET(0x45, 0xFF)); L(CH(0xE0)); L(SET(0x45, 0x15)); L(CH(0xE0));  // call [ReadFile]
-L(SET(0x4D, 0x4014)); L(SUBV(0x4D, 0x0E) + '  ; disp = 0x4014 - state_0E');
+L(SET(0x4D, iatDisp('ReadFile'))); L(SUBV(0x4D, 0x0E) + '  ; disp = iatDisp(ReadFile) - state_0E');
 L(CH(0xE5));
 C('CloseHandle(r13)');
 L(SET(0x45, 0x49)); L(CH(0xE0)); L(SET(0x45, 0x89)); L(CH(0xE0)); L(SET(0x45, 0xCD)); L(CH(0xE0)); // mov rcx, r13
 L(SET(0x45, 0xFF)); L(CH(0xE0)); L(SET(0x45, 0x15)); L(CH(0xE0));  // call [CloseHandle]
-L(SET(0x4D, 0x402C)); L(SUBV(0x4D, 0x0E) + '  ; disp = 0x402C - state_0E');
+L(SET(0x4D, iatDisp('CloseHandle'))); L(SUBV(0x4D, 0x0E) + '  ; disp = iatDisp(CloseHandle) - state_0E');
 L(CH(0xE5));
 L(RET());
 B();
@@ -1843,7 +1849,7 @@ L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); // mov [rs
 L('48 C7 44 24 30 00 00 00 00'); L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E));
 L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); // mov [rsp+0x30], 0
 L(SET(0x45, 0xFF)); L(CH(0xE0)); L(SET(0x45, 0x15)); L(CH(0xE0));
-L(SET(0x4D, 0x401C)); L(SUBV(0x4D, 0x0E) + '  ; disp = 0x401C - state_0E');
+L(SET(0x4D, iatDisp('CreateFileA'))); L(SUBV(0x4D, 0x0E) + '  ; disp = iatDisp(CreateFileA) - state_0E');
 L(CH(0xE5));
 C('mov r13, rax (file handle)');
 L(SET(0x45, 0x49)); L(CH(0xE0)); L(SET(0x45, 0x89)); L(CH(0xE0)); L(SET(0x45, 0xC5)); L(CH(0xE0));
@@ -1857,12 +1863,12 @@ L('48 8D 4C 24 20'); L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); L(I
 L('48 C7 44 24 20 00 00 00 00'); L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E));
 L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); L(INC(0x0E)); // mov [rsp+0x20], 0
 L(SET(0x45, 0xFF)); L(CH(0xE0)); L(SET(0x45, 0x15)); L(CH(0xE0));  // call [WriteFile]
-L(SET(0x4D, 0x400C)); L(SUBV(0x4D, 0x0E) + '  ; disp = 0x400C - state_0E');
+L(SET(0x4D, iatDisp('WriteFile'))); L(SUBV(0x4D, 0x0E) + '  ; disp = iatDisp(WriteFile) - state_0E');
 L(CH(0xE5));
 C('CloseHandle(r13)');
 L(SET(0x45, 0x49)); L(CH(0xE0)); L(SET(0x45, 0x89)); L(CH(0xE0)); L(SET(0x45, 0xCD)); L(CH(0xE0)); // mov rcx, r13
 L(SET(0x45, 0xFF)); L(CH(0xE0)); L(SET(0x45, 0x15)); L(CH(0xE0));  // call [CloseHandle]
-L(SET(0x4D, 0x402C)); L(SUBV(0x4D, 0x0E) + '  ; disp = 0x402C - state_0E');
+L(SET(0x4D, iatDisp('CloseHandle'))); L(SUBV(0x4D, 0x0E) + '  ; disp = iatDisp(CloseHandle) - state_0E');
 L(CH(0xE5));
 L(RET());
 B();
