@@ -1,8 +1,7 @@
 const E=require('./encode-x64.js');
 const{PE}=require('./pe-builder.js');
-const{TEXT_VS,STATE_TARGET,STATE_BUF_OFF,WIN_FUNCS}=require('./platform-config.js');
+const{TEXT_VS,CODE_RVA,STATE_TARGET,STATE_BUF_OFF,WIN_FUNCS}=require('./platform-config.js');
 const{ELF,alignS,BASE}=require('./elf-builder.js');
-const CODE_RVA=BASE+0x1000;
 const{buildLinuxStartup,makeLinuxEmit}=require('./linux-runtime.js');
 
 const RCX=1,RDX=2,RSP=4,RSI=6,RDI=7,R8=8,R9=9,R12=12,R13=13,R14=14,R15=15;
