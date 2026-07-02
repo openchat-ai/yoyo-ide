@@ -38,3 +38,59 @@ stderr.log
 # Tooling scratch
 _*.js
 _*.bin
+
+# Run-output noise (bench / test stderr/stdout capture)
+*.err
+*.out
+imatrix.err
+imatrix.out
+convert-gguf.err
+convert-gguf.out
+quant-iq2.err
+quant-iq2.out
+quant-iq3.err
+quant-iq3.out
+quantize.err
+quantize.out
+reconvert.err
+reconvert.out
+eval-iquant.err
+eval-iquant.out
+gen1-stderr.txt
+gen1-stdout.txt
+gh-push.err
+gh-push.out
+git-push.err
+git-push.out
+bench-50.err
+bench-50.out
+bootstrap-check.err
+bootstrap-check.out
+run-4p.err
+run-4p.out
+server.err
+server.out
+yi.err
+yl.err
+yn.err
+llama-div.err
+llama-div.out
+llama-test.err
+llama-test.out
+llama-prompt.txt
+llama-runs/
+
+# WIP yoyo variants (kept locally, regenerated per build)
+yoyo-7eded58.ty
+yoyo-committed.ty
+yoyo-head.ty
+minimal-input.ky
+
+# llama.cpp binaries cached for benchmarks
+tools/llama-cpu/
+tools/llama-b9843-bin-win-cpu-x64.zip
+tools/llama-b9843-bin-win-cpu-x64.zip.err
+
+# yoyo-ai assets (live in yoyo-ai/ repo)
+/yoyo-ai/
+prompts/
