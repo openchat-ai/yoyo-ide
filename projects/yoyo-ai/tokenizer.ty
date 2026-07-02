@@ -1,0 +1,275 @@
+; yoyo-ai-tokenizer.ty — BPE encoder (auto-generated, mirrors ref/bpe_ref.py)
+; Tables: models/tokenizer/vocab.bin + merges.bin (LoadFile at runtime)
+; Verify: python tests/test_tokenizer.py && python tests/compare_hf_1000.py
+
+12 s696e7075742e74787400
+12 s6f75747075742e69647300
+12 sv636f622e62696e00
+12 sm65726765732e62696e00
+
+41 01
+40 01 ; === main ===
+50 20 02 ; input.txt -> state_20/21
+50 22 03 ; vocab.bin   -> state_22/23
+50 24 04 ; merges.bin  -> state_24/25
+51 26 05 00 ; create output.ids
+30 60 00 ; out_count
+30 61 00 ; scan_pos
+30 62 00 ; piece_start
+41 10 ; pretokenize_scan
+51 26 06 60 ; flush output.ids (size=state_60 bytes, len=state_06 u32 slots)
+FF
+40 10 ; pretokenize_scan (byte-level driver, Week 3 scaffold)
+65 61 21 ; cmp scan_pos, input_size
+7A 11 ; ja done_encode
+60 62 61 ; piece_start = scan_pos
+41 12 ; collect_piece
+41 20 ; byte_to_unicode
+41 30 ; bpe_merge_loop
+41 40 ; emit_token_ids
+70 10 ; loop
+40 11 ; done_encode
+FF
+40 12 ; collect_piece — scan until whitespace/punct boundary
+66 61 ; scan_pos++ (1)
+65 61 21
+7A 11 ; past end -> done piece
+80 63 20 61 ; cur_byte = input[scan_pos]
+30 64 20 ; if space, break
+65 63 64
+71 13 ; je piece_done
+30 64 0A ; if LF, break
+65 63 64
+71 13
+66 61 ; scan_pos++ (2)
+65 61 21
+7A 11 ; past end -> done piece
+80 63 20 61 ; cur_byte = input[scan_pos]
+30 64 20 ; if space, break
+65 63 64
+71 13 ; je piece_done
+30 64 0A ; if LF, break
+65 63 64
+71 13
+66 61 ; scan_pos++ (3)
+65 61 21
+7A 11 ; past end -> done piece
+80 63 20 61 ; cur_byte = input[scan_pos]
+30 64 20 ; if space, break
+65 63 64
+71 13 ; je piece_done
+30 64 0A ; if LF, break
+65 63 64
+71 13
+66 61 ; scan_pos++ (4)
+65 61 21
+7A 11 ; past end -> done piece
+80 63 20 61 ; cur_byte = input[scan_pos]
+30 64 20 ; if space, break
+65 63 64
+71 13 ; je piece_done
+30 64 0A ; if LF, break
+65 63 64
+71 13
+66 61 ; scan_pos++ (5)
+65 61 21
+7A 11 ; past end -> done piece
+80 63 20 61 ; cur_byte = input[scan_pos]
+30 64 20 ; if space, break
+65 63 64
+71 13 ; je piece_done
+30 64 0A ; if LF, break
+65 63 64
+71 13
+66 61 ; scan_pos++ (6)
+65 61 21
+7A 11 ; past end -> done piece
+80 63 20 61 ; cur_byte = input[scan_pos]
+30 64 20 ; if space, break
+65 63 64
+71 13 ; je piece_done
+30 64 0A ; if LF, break
+65 63 64
+71 13
+66 61 ; scan_pos++ (7)
+65 61 21
+7A 11 ; past end -> done piece
+80 63 20 61 ; cur_byte = input[scan_pos]
+30 64 20 ; if space, break
+65 63 64
+71 13 ; je piece_done
+30 64 0A ; if LF, break
+65 63 64
+71 13
+66 61 ; scan_pos++ (8)
+65 61 21
+7A 11 ; past end -> done piece
+80 63 20 61 ; cur_byte = input[scan_pos]
+30 64 20 ; if space, break
+65 63 64
+71 13 ; je piece_done
+30 64 0A ; if LF, break
+65 63 64
+71 13
+40 13 ; piece_done
+FF
+40 20 ; byte_to_unicode — maps UTF-8 byte -> state_70 char cell
+80 70 20 62 ; load byte at piece_start into state_70
+61 70 20 ; += 0x20 offset table (placeholder)
+FF
+40 30 ; bpe_merge_loop — mirrors BPEEncoder.bpe() in ref/bpe_ref.py
+30 71 00 ; merge_active = 1
+40 31 ; merge_iter
+65 71 00 ; while merge_active
+72 32 ; jne exit_merge
+41 50 ; find_best_pair
+41 51 ; apply_merge
+70 31 ; continue merge
+40 32 ; exit_merge
+FF
+40 50 ; find_best_pair — scan merges.bin for min rank
+66 72 ; rank_cursor++ (step 1)
+65 72 25 ; compare against merges_size
+7A 32 ; exhausted ranks
+66 72 ; rank_cursor++ (step 2)
+65 72 25 ; compare against merges_size
+7A 32 ; exhausted ranks
+66 72 ; rank_cursor++ (step 3)
+65 72 25 ; compare against merges_size
+7A 32 ; exhausted ranks
+66 72 ; rank_cursor++ (step 4)
+65 72 25 ; compare against merges_size
+7A 32 ; exhausted ranks
+66 72 ; rank_cursor++ (step 5)
+65 72 25 ; compare against merges_size
+7A 32 ; exhausted ranks
+66 72 ; rank_cursor++ (step 6)
+65 72 25 ; compare against merges_size
+7A 32 ; exhausted ranks
+66 72 ; rank_cursor++ (step 7)
+65 72 25 ; compare against merges_size
+7A 32 ; exhausted ranks
+66 72 ; rank_cursor++ (step 8)
+65 72 25 ; compare against merges_size
+7A 32 ; exhausted ranks
+66 72 ; rank_cursor++ (step 9)
+65 72 25 ; compare against merges_size
+7A 32 ; exhausted ranks
+66 72 ; rank_cursor++ (step 10)
+65 72 25 ; compare against merges_size
+7A 32 ; exhausted ranks
+66 72 ; rank_cursor++ (step 11)
+65 72 25 ; compare against merges_size
+7A 32 ; exhausted ranks
+66 72 ; rank_cursor++ (step 12)
+65 72 25 ; compare against merges_size
+7A 32 ; exhausted ranks
+66 72 ; rank_cursor++ (step 13)
+65 72 25 ; compare against merges_size
+7A 32 ; exhausted ranks
+66 72 ; rank_cursor++ (step 14)
+65 72 25 ; compare against merges_size
+7A 32 ; exhausted ranks
+66 72 ; rank_cursor++ (step 15)
+65 72 25 ; compare against merges_size
+7A 32 ; exhausted ranks
+66 72 ; rank_cursor++ (step 16)
+65 72 25 ; compare against merges_size
+7A 32 ; exhausted ranks
+FF
+40 51 ; apply_merge — compact token tuple in state buffer
+30 73 00 ; token_slot_0
+60 74 73
+66 74
+30 73 01 ; token_slot_1
+60 74 73
+66 74
+30 73 02 ; token_slot_2
+60 74 73
+66 74
+30 73 03 ; token_slot_3
+60 74 73
+66 74
+30 73 04 ; token_slot_4
+60 74 73
+66 74
+30 73 05 ; token_slot_5
+60 74 73
+66 74
+30 73 06 ; token_slot_6
+60 74 73
+66 74
+30 73 07 ; token_slot_7
+60 74 73
+66 74
+30 73 08 ; token_slot_8
+60 74 73
+66 74
+30 73 09 ; token_slot_9
+60 74 73
+66 74
+30 73 0A ; token_slot_10
+60 74 73
+66 74
+30 73 0B ; token_slot_11
+60 74 73
+66 74
+30 73 0C ; token_slot_12
+60 74 73
+66 74
+30 73 0D ; token_slot_13
+60 74 73
+66 74
+30 73 0E ; token_slot_14
+60 74 73
+66 74
+30 73 0F ; token_slot_15
+60 74 73
+66 74
+30 73 10 ; token_slot_16
+60 74 73
+66 74
+30 73 11 ; token_slot_17
+60 74 73
+66 74
+30 73 12 ; token_slot_18
+60 74 73
+66 74
+30 73 13 ; token_slot_19
+60 74 73
+66 74
+30 73 14 ; token_slot_20
+60 74 73
+66 74
+30 73 15 ; token_slot_21
+60 74 73
+66 74
+30 73 16 ; token_slot_22
+60 74 73
+66 74
+30 73 17 ; token_slot_23
+60 74 73
+66 74
+FF
+40 40 ; emit_token_ids — vocab.bin lookup + append u32 to output
+30 75 00 ; vocab_cursor = 0
+40 41 ; vocab_scan
+65 75 23 ; cursor vs vocab entry count
+7A 42 ; lookup miss fallback
+41 43 ; compare_entry
+66 75
+70 41
+40 42 ; fallback_id = unk
+30 64 FF ; token_id = 0xFF placeholder
+40 43 ; append_out
+60 76 60 ; out_index = out_count
+68 76 26 ; out_ptr + index
+55 76 64 ; store token_id u32
+66 60
+FF
+
+; --- Python ref line map ---
+; bpe_ref.py:45  bpe() merge loop          -> H_30/H_31
+; bpe_ref.py:81  encode_piece()            -> H_10/H_12
+; bpe_ref.py:117 encode() special split    -> (Week 4 ChatML in Python ref)
+; bpe_ref.py:89  decode_ids()              -> Week 4 decode pass
