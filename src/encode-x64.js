@@ -121,6 +121,94 @@ function jmp_rel8(b,off){b.u8(0xEB);b.u8(off&255);}
 
 function imul_rr(b,d,s){b.rex(1,d>7,0,s>7);b.u8(0x0F);b.u8(0xAF);b.modrm(3,d&7,s&7);}
 
+// ——— SSE2 scalar double (state slots hold IEEE754 f64 bits) ———
+function _xmm_rex(b, xmm, base, idx){
+  const rexR = (xmm & 8) ? 1 : 0;
+  const rexX = idx !== null && (idx & 8) ? 1 : 0;
+  const rexB = (base & 8) ? 1 : 0;
+  if (rexR || rexX || rexB) b.rex(0, rexR, rexX, rexB);
+}
+
+function movsd_xmm_m64(b, xmm, base, disp, idx, scale){
+  // F2 0F 10 /r — movsd xmm, m64
+  b.u8(0xF2); b.u8(0x0F); b.u8(0x10);
+  const reg = xmm & 7;
+  if (idx !== null && idx !== undefined) {
+    _xmm_rex(b, xmm, base, idx);
+    b.modrm(0, reg, 4);
+    b.sib(scale === 8 ? 3 : 0, idx & 7, base & 7);
+  } else if (disp === 0 && (base & 7) !== 5) {
+    _xmm_rex(b, xmm, base, null);
+    b.modrm(0, reg, base & 7);
+  } else if (disp >= -128 && disp <= 127) {
+    _xmm_rex(b, xmm, base, null);
+    b.modrm(1, reg, base & 7);
+    b.u8(disp & 255);
+  } else {
+    _xmm_rex(b, xmm, base, null);
+    b.modrm(2, reg, base & 7);
+    b.u32(disp >>> 0);
+  }
+}
+
+function movsd_m64_xmm(b, base, disp, xmm, idx, scale){
+  // F2 0F 11 /r — movsd m64, xmm
+  b.u8(0xF2); b.u8(0x0F); b.u8(0x11);
+  const reg = xmm & 7;
+  if (idx !== null && idx !== undefined) {
+    _xmm_rex(b, xmm, base, idx);
+    b.modrm(0, reg, 4);
+    b.sib(scale === 8 ? 3 : 0, idx & 7, base & 7);
+  } else if (disp === 0 && (base & 7) !== 5) {
+    _xmm_rex(b, xmm, base, null);
+    b.modrm(0, reg, base & 7);
+  } else if (disp >= -128 && disp <= 127) {
+    _xmm_rex(b, xmm, base, null);
+    b.modrm(1, reg, base & 7);
+    b.u8(disp & 255);
+  } else {
+    _xmm_rex(b, xmm, base, null);
+    b.modrm(2, reg, base & 7);
+    b.u32(disp >>> 0);
+  }
+}
+
+function addsd_xmm_xmm(b, dst, src){
+  b.u8(0xF2); b.u8(0x0F); b.u8(0x58);
+  if ((dst & 8) || (src & 8)) b.rex(0, (dst & 8) ? 1 : 0, 0, (src & 8) ? 1 : 0);
+  b.modrm(3, dst & 7, src & 7);
+}
+function subsd_xmm_xmm(b, dst, src){
+  b.u8(0xF2); b.u8(0x0F); b.u8(0x5C);
+  if ((dst & 8) || (src & 8)) b.rex(0, (dst & 8) ? 1 : 0, 0, (src & 8) ? 1 : 0);
+  b.modrm(3, dst & 7, src & 7);
+}
+function mulsd_xmm_xmm(b, dst, src){
+  b.u8(0xF2); b.u8(0x0F); b.u8(0x59);
+  if ((dst & 8) || (src & 8)) b.rex(0, (dst & 8) ? 1 : 0, 0, (src & 8) ? 1 : 0);
+  b.modrm(3, dst & 7, src & 7);
+}
+function divsd_xmm_xmm(b, dst, src){
+  b.u8(0xF2); b.u8(0x0F); b.u8(0x5E);
+  if ((dst & 8) || (src & 8)) b.rex(0, (dst & 8) ? 1 : 0, 0, (src & 8) ? 1 : 0);
+  b.modrm(3, dst & 7, src & 7);
+}
+
+function mov_rm32(b, reg, base, disp){
+  b.rex(0, reg > 7, 0, base > 7);
+  b.u8(0x8B);
+  if (disp === 0 && (base & 7) !== 5) b.modrm(0, reg & 7, base & 7);
+  else if (disp >= -128 && disp <= 127) { b.modrm(1, reg & 7, base & 7); b.u8(disp & 255); }
+  else { b.modrm(2, reg & 7, base & 7); b.u32(disp >>> 0); }
+}
+function mov_mr32(b, base, disp, reg){
+  b.rex(0, reg > 7, 0, base > 7);
+  b.u8(0x89);
+  if (disp === 0 && (base & 7) !== 5) b.modrm(0, reg & 7, base & 7);
+  else if (disp >= -128 && disp <= 127) { b.modrm(1, reg & 7, base & 7); b.u8(disp & 255); }
+  else { b.modrm(2, reg & 7, base & 7); b.u32(disp >>> 0); }
+}
+
 module.exports={
   Buf,
   R0,R1,R2,R3,R4,R5,R6,R7,R8,R9,R10,R11,R12,R13,R14,R15,
@@ -129,5 +217,7 @@ module.exports={
   lea_rip,mov_ri,mov_rr,mov_mr,mov_rm,mov_mr64,mov_rm64,mov_mi32,
   xor_rr,cmp_rr,test_rr,add_rr,sub_rr,
   add_ri,sub_ri,and_ri,cmp_ri,
-  push_r,pop_r,jcc32,jmp_rel8,imul_rr
+  push_r,pop_r,jcc32,jmp_rel8,imul_rr,
+  movsd_xmm_m64,movsd_m64_xmm,addsd_xmm_xmm,subsd_xmm_xmm,mulsd_xmm_xmm,divsd_xmm_xmm,
+  mov_rm32,mov_mr32
 };

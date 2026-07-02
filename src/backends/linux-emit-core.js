@@ -8,6 +8,8 @@ const E = require('../encode-x64.js');
 const { ELF, alignS, BASE } = require('../elf-builder.js');
 const { TEXT_VS, STATE_BUF_OFF, OUTPUT_STATE_BUF_OFF } = require('../platform-config.js');
 const { buildLinuxStartup, buildLinuxOutputStartup, makeLinuxEmit } = require('../linux-runtime.js');
+const { CompileError, resolveFixupsStrict, assertTextLimit } = require('../compile-validator.js');
+const { emitStoreByte87, OP_RAW_BYTES } = require('../opcode-emit-x64.js');
 
 const CODE_RVA = BASE + 0x1000;
 const RAX = 0, RCX = 1, RDX = 2, RDI = 7, RSI = 6, R8 = 8;
@@ -82,11 +84,19 @@ function createEmitContext(strs, strPos, opts = {}) {
       linux.stPut(a[0].v, RAX);
     }
     else if (o === 0x81) { E.mov_ri(code, RAX, BigInt(a[1].v)); linux.stGet(RDX, a[0].v); E.mov_mr(code, RDX, a[2] ? a[2].v : 0, RAX, true); }
-    else if (o === 0x84) { linux.stGet(RDI, a[0].v); linux.ld(RSI, a[1].v); E.mov_ri(code, RCX, BigInt(a[2].v)); code.u8(0xf3); code.u8(0xa4); }
+    else if (o === 0x84) {
+      linux.stGet(RDI, a[0].v);
+      linux.stGet(RSI, 8);
+      E.add_ri(code, RSI, a[1].v);
+      E.mov_ri(code, RCX, BigInt(a[2].v));
+      code.u8(0xf3); code.u8(0xa4);
+    }
     else if (o === 0x85) { linux.stGet(RDI, a[0].v); linux.stGet(RSI, a[1].v); linux.stGet(RCX, a[2].v); code.u8(0xf3); code.u8(0xa4); }
     else if (o === 0x55) { linux.stGet(RDX, a[0].v); linux.stGet(RAX, a[1].v); code.u8(0x89); code.u8(0x02); }
     else if (o === 0x57) { linux.stGet(RDX, a[0].v); linux.stGet(R8, a[1].v); E.add_rr(code, RDX, R8); linux.stGet(RAX, a[2].v); code.u8(0x88); code.u8(0x02); }
-    else if (o === 0x87) { linux.stGet(RDX, a[0].v); linux.stGet(RAX, a[1].v); code.u8(0x88); code.u8(0x02); }
+    else if (o === 0x87) {
+      emitStoreByte87(code, (s) => linux.stGet(RDX, s), (s) => linux.stGet(RAX, s), a);
+    }
     else if (o === 0xff) { E.ret(code); }
     else if (o === 0x20) { linux.emitAlloc(a[0].v, a[1].v); }
     else if (o === 0xa0) {
@@ -97,6 +107,10 @@ function createEmitContext(strs, strPos, opts = {}) {
       }
     }
     else if (o === 0xa1) { if (a[0]) code.u8(a[0].v & 255); }
+    else if (o === OP_RAW_BYTES) { for (const b of op.rawBytes) code.u8(b); }
+    else {
+      throw new CompileError(`line ${op.line || '?'}: unimplemented opcode 0x${o.toString(16)} in emit`);
+    }
   }
 
   function emitTirOp(tirOp) {
@@ -153,15 +167,13 @@ function createEmitContext(strs, strPos, opts = {}) {
       case Op.NOP:
         break;
       default:
-        break;
+        throw new CompileError(`unimplemented TIR op kind ${tirOp.kind}`);
     }
   }
 
   function finish(prog, sOff) {
-    for (const f of code.fixups) {
-      const t = code.labels[f.n];
-      if (t !== undefined) code.b.writeInt32LE(t - (f.p + 4), f.p);
-    }
+    assertTextLimit(code.tell(), TEXT_VS, 'linux-emit-core .text');
+    resolveFixupsStrict(code, { allowMissing: process.env.YOYO_STRICT_FIXUPS !== '1' });
 
     const fixDR = CODE_RVA + alignS(code.tell());
     for (const f of code.dataFixups) {
@@ -265,4 +277,77 @@ function compileFromTirModule(mod, opts = {}) {
   return ctx.finish({ blobs, strings }, sOff);
 }
 
-module.exports = { createEmitContext, compileFromAnalyzed, compileFromTirModule, buildStringLayout, JCC_MAP };
+/**
+ * Emit TIR module and return per-handler machine-code slices (pre-startup layout).
+ * Used by blob-handlers TIR path — single codegen reference for scan-emitted gen2.
+ */
+function extractTirHandlerSlices(mod, opts = {}) {
+  const strings = mod.strings || {};
+  const { strs, strPos, sOff } = buildStringLayout(strings);
+  const ctx = createEmitContext(strs, strPos, opts);
+
+  const order = opts.handlerOrder === 'file'
+    ? (mod.handlerOrder || [])
+    : [...(mod.handlerOrder || [])].sort((a, b) => a - b);
+
+  const topFn = mod.functions.find(f => f.name === '__top');
+  if (topFn) {
+    for (const block of topFn.blocks) {
+      for (const op of block.ops) {
+        if (op.kind !== require('../tir/ops.js').Op.STRING_DEF &&
+            op.kind !== require('../tir/ops.js').Op.DATA_BLOB) {
+          ctx.emitTirOp(op);
+        }
+      }
+    }
+  }
+  ctx.emitExitAligned();
+
+  for (const hh of order) {
+    const fn = mod.functions.find(f => f.name === 'H' + hh.toString(16));
+    if (!fn) continue;
+    for (const block of fn.blocks) {
+      for (const op of block.ops) {
+        if (op.kind === require('../tir/ops.js').Op.LABEL) ctx.code.label('H' + op.hh);
+        else if (op.kind !== require('../tir/ops.js').Op.STRING_DEF &&
+                 op.kind !== require('../tir/ops.js').Op.DATA_BLOB) {
+          ctx.emitTirOp(op);
+        }
+      }
+    }
+    E.ret(ctx.code);
+  }
+
+  for (const f of ctx.code.fixups) {
+    const t = ctx.code.labels[f.n];
+    if (t !== undefined) ctx.code.b.writeInt32LE(t - (f.p + 4), f.p);
+  }
+
+  const slices = new Map();
+  for (let i = 0; i < order.length; i++) {
+    const hh = order[i];
+    const key = 'H' + hh.toString(16);
+    const start = ctx.code.labels[key];
+    if (start === undefined) continue;
+    let end = ctx.code.tell();
+    for (let j = i + 1; j < order.length; j++) {
+      const nextKey = 'H' + order[j].toString(16);
+      const nextStart = ctx.code.labels[nextKey];
+      if (nextStart !== undefined) { end = nextStart; break; }
+    }
+    let buf = ctx.code.b.slice(start, end);
+    if (buf.length > 0 && buf[buf.length - 1] === 0xc3) buf = buf.slice(0, -1);
+    slices.set(hh, Buffer.from(buf));
+  }
+
+  return { slices, order, codeEnd: ctx.code.tell(), startupLen: ctx.STARTUP_MAX };
+}
+
+module.exports = {
+  createEmitContext,
+  compileFromAnalyzed,
+  compileFromTirModule,
+  extractTirHandlerSlices,
+  buildStringLayout,
+  JCC_MAP,
+};

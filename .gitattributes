@@ -1,0 +1,5 @@
+*.exe binary
+*.ky binary
+*.elf binary
+*.wasm binary
+*.zip binary

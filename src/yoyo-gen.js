@@ -8,6 +8,7 @@ const { STATE_TARGET, ELF_TEXT_FILE_OFF, PE_TEXT_FILE_OFF } = require('./platfor
 const { buildLinuxOutputStartup, buildLinuxFixupResolver } = require('./linux-runtime.js');
 const { appendLinuxEmitHandlers } = require('./linux-self-emit.js');
 const { blobHandlers } = require('./blob-handlers.js');
+const { buildWinHandlerOverlay } = require('./win-handler-overlay.js');
 
 function parseTarget(argv) {
   for (let i = 0; i < argv.length; i++) {
@@ -27,6 +28,9 @@ const FUNCS      = ['ExitProcess','GetStdHandle','WriteFile','ReadFile',
 const TEXT_VS    = 0x8000;   // .text virtual size (must fit emitted code)
 const CODE_RVA   = 0x1000;   // .text base RVA
 const IAT_BASE   = 0x9000;   // IAT base (= CODE_RVA + TEXT_VS = 0x1000 + 0x8000)
+const PE_IMPORT_PREFIX = 0x400; // .rdata bytes before embedded user data (IAT + import dir)
+const DATA_USER_RVA = IAT_BASE + PE_IMPORT_PREFIX; // runtime data_base for state_08 / blob copy
+const PE_DATA_FILE_OFF = 0x8400 + PE_IMPORT_PREFIX; // file offset of user data in output PE buffer
 const IAT_DISP_BASE = IAT_BASE - 0x1004; // disp32 base for IAT call: state_0E has already +2 for FF 15, plus 4 bytes of disp32 ahead
 
 // IAT entries for each API function
@@ -56,15 +60,17 @@ function buildStartup() {
   E.mov_rr(b, 15, 0);           // mov r15, rax  (state array base)
   // Compute data section base and store in state_08
   const leaOff = b.tell();      // offset of the LEA instruction
-  E.lea_rip(b, 0, IAT_BASE - (CODE_RVA + leaOff + 7)); // lea rax, [rip + disp] -> data_base
+  E.lea_rip(b, 0, DATA_USER_RVA - (CODE_RVA + leaOff + 7)); // lea rax, [rip + disp] -> data_base
   E.mov_mr64(b, 15, 8 * 8, 0); // mov [r15 + 64], rax = state_08 = data_base
   E.mov_ri(b, 1, -11n);         // mov rcx, STD_OUTPUT_HANDLE
   const gsOff = b.tell();
   E.call_rip(b, IAT.GetStdHandle - (CODE_RVA + gsOff + 6));
   E.mov_rr(b, 14, 0);           // mov r14, rax  (stdout handle)
-  return b.b.slice(0, b.tell()); // 82 bytes
+  E.jmp_rel(b, 0);              // jmp to H_00 (disp patched after handler map snapshot)
+  return b.b.slice(0, b.tell());
 }
 const startupBlob = buildStartup();
+const STARTUP_JMP_DISP_OFF = startupBlob.length - 4;
 
 const LINUX_CODE_RVA = BASE + 0x1000;
 const linuxOutputStartup = buildLinuxOutputStartup(LINUX_CODE_RVA + TEXT_VS);
@@ -80,9 +86,19 @@ const linuxExitBlob = isLinux ? Buffer.from([0x48, 0x31, 0xff, 0xc7, 0xc0, 0x3c,
 const EXIT_BLOB_OFF = 0xCD00;
 const exitBlobLen = linuxExitBlob ? linuxExitBlob.length : 0;
 
-const TPL_DATA_SIZE = ((Math.max(
-  TEMPLATE_BLOB_OFF + tplBlobBytes.length,
+const HANDLER_IMAGE_OFF = STARTUP_BLOB_OFF + maxStartupLen;
+const HANDLER_IMAGE_MAX = 0x8000;
+const HANDLER_MAP_EMBED_OFF = HANDLER_IMAGE_OFF + HANDLER_IMAGE_MAX;
+const HANDLER_MAP_EMBED_SIZE = 0x404;
+const RUNTIME_DATA_OFF = 0;
+const RUNTIME_DATA_SIZE = 0x10000;
+const useNativeOverlay = !isLinux && process.env.YOYO_NATIVE_OVERLAY !== '0';
+
+// Nested template blob (at data+0x4000) uses a fixed shell data size — not self-sized.
+const SHELL_DATA_SIZE = ((Math.max(
+  RUNTIME_DATA_SIZE,
   STARTUP_BLOB_OFF + maxStartupLen,
+  useNativeOverlay ? HANDLER_MAP_EMBED_OFF + HANDLER_MAP_EMBED_SIZE : 0,
   EXIT_BLOB_OFF + exitBlobLen
 ) + 0xFFF) / 0x1000 | 0) * 0x1000;
 
@@ -91,9 +107,29 @@ const tplPE = new PE();
 tplPE.subsys = 3;
 tplPE.addImport('KERNEL32.dll', FUNCS);
 tplPE.setCode(Buffer.alloc(TEXT_VS, 0x90));
-tplPE.setData(Buffer.alloc(TPL_DATA_SIZE, 0));
+tplPE.setData(Buffer.alloc(SHELL_DATA_SIZE, 0));
 const peBytes = tplPE.build();
 const peHex = peBytes.toString('hex');
+
+const OUTPUT_DATA_NEED = ((Math.max(
+  RUNTIME_DATA_SIZE,
+  TEMPLATE_BLOB_OFF + peBytes.length,
+  STARTUP_BLOB_OFF + maxStartupLen,
+  useNativeOverlay ? HANDLER_MAP_EMBED_OFF + HANDLER_MAP_EMBED_SIZE : 0,
+  EXIT_BLOB_OFF + exitBlobLen
+) + 0xFFF) / 0x1000 | 0) * 0x1000;
+
+const outTplPE = new PE();
+outTplPE.subsys = 3;
+outTplPE.addImport('KERNEL32.dll', FUNCS);
+outTplPE.setCode(Buffer.alloc(TEXT_VS, 0x90));
+outTplPE.setData(Buffer.alloc(OUTPUT_DATA_NEED, 0));
+const outPeRef = outTplPE.build();
+const outputWriteLen = outPeRef.length;
+const PE_RDATA_VS = outPeRef.readUInt32LE(0x228);
+const PE_RDATA_RS = outPeRef.readUInt32LE(0x230);
+const PE_SIZE_OF_IMAGE = outPeRef.readUInt32LE(0x140);
+const TPL_DATA_SIZE = OUTPUT_DATA_NEED;
 
 const tplELF = new ELF();
 tplELF.setCode(Buffer.alloc(TEXT_VS, 0x90));
@@ -170,7 +206,7 @@ B();
 const tplBytes = isLinux ? elfBytes : peBytes;
 const tplHex = isLinux ? tplBlobHex : peHex;
 const tplCopyLen = isLinux ? tplBlobBytes.length : peBytes.length;
-const tplWriteLen = tplBytes.length;
+const tplWriteLen = isLinux ? tplBytes.length : (useNativeOverlay ? outputWriteLen : tplBytes.length);
 const tplTextOff = isLinux ? ELF_TEXT_FILE_OFF : PE_TEXT_FILE_OFF;
 const outputStartup = isLinux ? linuxOutputStartup : startupBlob;
 const ELF_DATA_FILESZ_OFF = 0xD0;
@@ -245,48 +281,75 @@ L(SET(0x09, 0)  + ' ; first_handler_flag = 0');
 C('Copy startup code to output .text');
 L(GET(0x4C, 0x03));
 L('84 4C ' + hx(STARTUP_BLOB_OFF, 4) + ' ' + hx(outputStartup.length, 2));
-L(ADD(0x0E, outputStartup.length));
+L(SET(0x0E, outputStartup.length));
 
 const HANDLER_MAP_OFF = 0xFE00;
+const OUTPUT_DATA_FILE_OFF = PE_DATA_FILE_OFF;
 
-C('Run scanner -> emitter');
-L('50 0A 00');
-L(GET(0x0C, 0x0A));
-L(GET(0x0D, 0x0B));
-L(ADDV(0x0D, 0x0C));
-L(SET(0x09, 1) + ' ; suppress H_31 first-handler exit prologue during scan');
-L(CH(1)  + ' ; call H_01 main scan loop');
+if (useNativeOverlay) {
+  C('Copy Node-compiled handler image to output .text (win-emit-core overlay)');
+  L(GET(0x4C, 0x03));
+  L(ADDV(0x4C, 0x0E));
+  L('84 4C ' + hx(HANDLER_IMAGE_OFF, 4) + ' __HIMG_LEN__');
+  L(SET(0x0E, outputStartup.length));
+  L(ADD(0x0E, 0) + ' ; + __HIMG_LEN__ (patched at yoyo-gen time)');
+} else {
+  C('Run scanner -> emitter');
+  L('50 0A 00');
+  L(GET(0x0C, 0x0A));
+  L(GET(0x0D, 0x0B));
+  L(ADDV(0x0D, 0x0C));
+  L(SET(0x09, 1) + ' ; suppress H_31 first-handler exit prologue during scan');
+  L(SET(0x0E, outputStartup.length) + ' ; code_offset past startup before scan');
+  L(CH(1)  + ' ; call H_01 main scan loop (H_CC ret lands here for post-scan driver)');
+}
 
-C('Snapshot handler offset table + final code_offset into output data (blob extraction)');
-L(GET(0x47, 0x04));
-L(GET(0x48, 0x08));
-L(ADD(0x48, HANDLER_MAP_OFF));
-L(SET(0x53, 0x400));
-L('85 48 47 53');
-L(GET(0x48, 0x08));
-L(ADD(0x48, HANDLER_MAP_OFF + 0x400));
-L(GET(0x47, 0x0E));
-L('55 48 47');
+C('Re-copy startup to output .text[0] (scan may emit at offset 0 before code_offset is established)');
+L(GET(0x4C, 0x03));
+L('84 4C ' + hx(STARTUP_BLOB_OFF, 4) + ' ' + hx(outputStartup.length, 2));
 
-C('Patch embedded blobs into output ELF data section (bootstrap self-hosting)');
-L(GET(0x47, 0x02));
-L(ADD(0x47, 0x9000 + TEMPLATE_BLOB_OFF));
-L(GET(0x48, 0x08));
-L(ADD(0x48, TEMPLATE_BLOB_OFF));
+C('Patch embedded blobs into output .data from compiler embeds (state_08; required for self-host)');
+L(GET(0x47, 0x08));
+L(ADD(0x47, TEMPLATE_BLOB_OFF));
+L(GET(0x48, 0x02));
+L(ADD(0x48, OUTPUT_DATA_FILE_OFF + TEMPLATE_BLOB_OFF));
 L(SET(0x53, tplCopyLen));
-L('85 47 48 53');
-L(GET(0x47, 0x02));
-L(ADD(0x47, 0x9000 + STARTUP_BLOB_OFF));
-L(GET(0x48, 0x08));
-L(ADD(0x48, STARTUP_BLOB_OFF));
+L('85 48 47 53');
+L(GET(0x47, 0x08));
+L(ADD(0x47, STARTUP_BLOB_OFF));
+L(GET(0x48, 0x02));
+L(ADD(0x48, OUTPUT_DATA_FILE_OFF + STARTUP_BLOB_OFF));
 L(SET(0x53, outputStartup.length));
-L('85 47 48 53');
+L('85 48 47 53');
+
+if (useNativeOverlay) {
+  C('Copy runtime string/data prefix into output .data (overlay handler ld() targets)');
+  L(GET(0x47, 0x08));
+  L(ADD(0x47, RUNTIME_DATA_OFF));
+  L(GET(0x48, 0x02));
+  L(ADD(0x48, OUTPUT_DATA_FILE_OFF + RUNTIME_DATA_OFF));
+  L(SET(0x53, RUNTIME_DATA_SIZE));
+  L('85 48 47 53');
+  C('Copy handler overlay blobs into output .data (required for self-host)');
+  L(GET(0x47, 0x08));
+  L(ADD(0x47, HANDLER_IMAGE_OFF));
+  L(GET(0x48, 0x02));
+  L(ADD(0x48, OUTPUT_DATA_FILE_OFF + HANDLER_IMAGE_OFF));
+  L(SET(0x53, 0) + ' ; __HIMG_LEN__');
+  L('85 48 47 53');
+  L(GET(0x47, 0x08));
+  L(ADD(0x47, HANDLER_MAP_EMBED_OFF));
+  L(GET(0x48, 0x02));
+  L(ADD(0x48, OUTPUT_DATA_FILE_OFF + HANDLER_MAP_EMBED_OFF));
+  L(SET(0x53, 0x404));
+  L('85 48 47 53');
+}
 
 if (isLinux) {
   C('Copy exit syscall blob into output ELF data section');
   L(GET(0x47, 0x02));
-  L(ADD(0x47, 0x9000 + EXIT_BLOB_OFF));
-  L(GET(0x48, 0x08));
+  L(ADD(0x47, PE_DATA_FILE_OFF + EXIT_BLOB_OFF));
+  L(GET(0x48, 0x03));
   L(ADD(0x48, EXIT_BLOB_OFF));
   L(SET(0x53, exitBlobLen));
   L('85 47 48 53');
@@ -301,6 +364,57 @@ if (isLinux) {
   L(GET(0x47, 0x02));
   L(ADD(0x47, ELF_DATA_MEMSZ_OFF));
   L(SET(0x53, TPL_DATA_SIZE));
+  L('55 47 53');
+}
+
+if (useNativeOverlay) {
+  C('Load embedded handler map into runtime state_04');
+  L(GET(0x48, 0x04));
+  L(GET(0x47, 0x08));
+  L(ADD(0x47, HANDLER_MAP_EMBED_OFF));
+  L(SET(0x53, 0x404));
+  L('85 48 47 53');
+  C('Snapshot handler map + codeEnd to output data+0xFE00');
+  L(GET(0x47, 0x04));
+  L(GET(0x48, 0x02));
+  L(ADD(0x48, OUTPUT_DATA_FILE_OFF + HANDLER_MAP_OFF));
+  L(SET(0x53, 0x404));
+  L('85 48 47 53');
+} else {
+  C('Snapshot handler offset table + final code_offset (after blob patches; map at data+0xFE00)');
+  L(GET(0x47, 0x04));
+  L(GET(0x48, 0x02));
+  L(ADD(0x48, OUTPUT_DATA_FILE_OFF + HANDLER_MAP_OFF));
+  L(SET(0x53, 0x400));
+  L('85 48 47 53');
+  L(GET(0x48, 0x02));
+  L(ADD(0x48, OUTPUT_DATA_FILE_OFF + HANDLER_MAP_OFF + 0x400));
+  L(GET(0x47, 0x0E));
+  L('55 48 47');
+}
+
+C('Patch startup jmp rel32 at .text+' + hx(STARTUP_JMP_DISP_OFF, 2) + ' -> handler_table[0]');
+L(SET(0x50, 0));
+L(CH(0xE7) + '  ; state_4D = handler_table[0]');
+L(SET(0x4A, outputStartup.length));
+L(SUBV(0x4D, 0x4A) + '  ; rel32 = handler[0] - startup_end');
+L(GET(0x4C, 0x03));
+L(ADD(0x4C, STARTUP_JMP_DISP_OFF));
+L('55 4C 4D');
+
+if (!isLinux && useNativeOverlay) {
+  C('Expand output PE .rdata / SizeOfImage for bootstrap blob embeds');
+  L(GET(0x47, 0x02));
+  L(ADD(0x47, 0x228));
+  L(SET(0x53, PE_RDATA_VS));
+  L('55 47 53');
+  L(GET(0x47, 0x02));
+  L(ADD(0x47, 0x230));
+  L(SET(0x53, PE_RDATA_RS));
+  L('55 47 53');
+  L(GET(0x47, 0x02));
+  L(ADD(0x47, 0x140));
+  L(SET(0x53, PE_SIZE_OF_IMAGE));
   L('55 47 53');
 }
 
@@ -339,7 +453,7 @@ C('============================================================');
 C('H_01: Main loop - read byte and dispatch by scanner state');
 L(H(0x01));
 L(CMP(0x0C, 0x0D));
-L(JAE(0xCC) + '  ; EOF -> H_CC (call finalizer, return to H_C3)');
+L(JAE(0xCC) + '  ; EOF -> H_CC (ret resumes snapshot after scan call)');
 L(LDB(0x0F, 0x0C, 0) + ' ; read byte -> state_0F');
 L(INC(0x0C)  + ' ; advance read ptr');
 C('Dispatch by scanner state (state_10)');
@@ -811,10 +925,10 @@ L(CH(0x1E) + '  ; call H_1E');
 L(RET() + '      ; return to H_CC');
 B();
 
-C('H_CC: EOF trampoline - call H_CB then return to H_C3');
+C('H_CC: EOF trampoline - call H_CB then return to snapshot after H_01 call site');
 L(H(0xCC));
 L(CH(0xCB) + '  ; call H_CB');
-L(RET() + '      ; return to H_C3 after scan');
+L(RET() + '      ; return to post-scan snapshot in H_00');
 B();
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -1952,8 +2066,48 @@ B();
 // ════════════════════════════════════════════════════════════════════════════════
 const outPath = path.join(__dirname, '..', 'projects', 'yoyo.ty');
 let content = lines.join('\n');
-if (isLinux && process.env.YOYO_BLOB === '1') {
-  content = blobHandlers(content, path.join(__dirname, '..'));
+if (useNativeOverlay) {
+  let lenHex = '0000';
+  let overlay;
+  for (let pass = 0; pass < 4; pass++) {
+    let passContent = lines.join('\n');
+    passContent = passContent.replace('61 0e 00 ; + __HIMG_LEN__ (patched at yoyo-gen time)', '61 0e ' + lenHex);
+    passContent = passContent.replace('30 53 00 ; __HIMG_LEN__', '30 53 ' + lenHex);
+    passContent = passContent.replace(/__HIMG_LEN__/g, lenHex);
+    overlay = buildWinHandlerOverlay(passContent, outputStartup.length);
+    const next = hx(overlay.imageLen, 4);
+    if (next === lenHex) {
+      content = passContent;
+      break;
+    }
+    lenHex = next;
+    if (pass === 3) {
+      content = passContent.replace(/__HIMG_LEN__/g, lenHex);
+      overlay = buildWinHandlerOverlay(content, outputStartup.length);
+    }
+  }
+  if (overlay.imageLen > HANDLER_IMAGE_MAX) {
+    throw new Error('handler overlay ' + overlay.imageLen + ' exceeds HANDLER_IMAGE_MAX ' + HANDLER_IMAGE_MAX);
+  }
+  const blobInsert = [
+    '',
+    '; Node-compiled handler image (win-emit-core overlay)',
+    '13 ' + hx(HANDLER_IMAGE_OFF, 4) + ' s' + overlay.image.toString('hex'),
+    '; Embedded handler offset table + codeEnd',
+    '13 ' + hx(HANDLER_MAP_EMBED_OFF, 4) + ' s' + overlay.mapBuf.toString('hex'),
+    '',
+  ].join('\n');
+  const anchor = '; Output-program startup blob';
+  const ai = content.indexOf(anchor);
+  if (ai < 0) throw new Error('startup blob anchor missing in yoyo-gen output');
+  const dataLine = content.indexOf('13 ' + hx(STARTUP_BLOB_OFF, 4), ai);
+  const insertAt = content.indexOf('\n', dataLine);
+  if (insertAt < 0) throw new Error('startup blob line missing');
+  content = content.slice(0, insertAt + 1) + blobInsert + content.slice(insertAt + 1);
+}
+if (process.env.YOYO_TIR_BLOB === '1' || process.env.YOYO_BLOB === '1') {
+  const blobMode = process.env.YOYO_TIR_BLOB === '1' ? 'tir' : 'scan';
+  content = blobHandlers(content, path.join(__dirname, '..'), { mode: blobMode, target });
 }
 fs.writeFileSync(outPath, content);
 console.log('Written ' + outPath + ' [' + target + ']');
