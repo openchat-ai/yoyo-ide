@@ -97,12 +97,14 @@ function lowerOpcode(op, args) {
       return [{ kind: Op.RAW_A0, hex: a[0] && a[0].t === 'h' ? a[0].v : '' }];
     case 0xA1:
       return [{ kind: Op.EMIT_U8, value: argN(a, 0) & 0xff }];
+    case 0xAB:
+      return [{ kind: Op.RAW_BYTES, bytes: op.rawBytes || [] }];
     case 0x12:
       return [{ kind: Op.STRING_DEF, id: argN(a, 0), text: a[1] ? a[1].v : (a[0] && a[0].t === 's' ? a[0].v : '') }];
     case 0x13:
       return [{ kind: Op.DATA_BLOB, offset: argN(a, 0), hex: a[1] && a[1].raw ? a[1].raw.toString('hex') : '' }];
     default:
-      return [{ kind: Op.NOP, rawOp: o, arity: a.length }];
+      return [{ kind: Op.NOP, rawOp: o, arity: (a && a.length) || 0 }];
   }
 }
 

@@ -162,6 +162,10 @@ function createEmitContext(strs, strPos, opts = {}) {
         }
         break;
       }
+      case Op.RAW_BYTES: {
+        for (const b of (tirOp.bytes || [])) code.u8(b & 0xff);
+        break;
+      }
       case Op.STRING_DEF:
       case Op.DATA_BLOB:
       case Op.NOP:

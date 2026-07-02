@@ -28,6 +28,7 @@ const Op = {
   MEMCPY_DATA: 'intrinsic.memcpy_data',
   MEMCPY_STATE: 'intrinsic.memcpy_state',
   RAW_A0: 'raw.a0',
+  RAW_BYTES: 'raw.bytes',
   BLOB_LINE: 'blob.line',
   STRING_DEF: 'string.def',
   DATA_BLOB: 'data.blob',
