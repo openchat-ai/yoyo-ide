@@ -42,16 +42,36 @@ $\{0,1,2\}$ 是因为 yoyo state 是 u64 且要避开负立即数歧义（见 §
 
 ## 1.2 为什么代码用 0/1/2 而不是 -1/0/+1
 
-yoyo `0x30 SET imm` 在 x64 emit 是 `mov qword [r15+slot*8], val`——`val` 是
-32-bit 立即数**符号扩展**到 64-bit。所以：
+**根本约束：yoyo `0x30 SET imm` 只能写 u8（0-255）的立即数**。
 
-| yoyo 源码 | 实际存到 state | 二义性 |
-|----------|----------------|--------|
-| `30 0A FF` | `0xFFFFFFFFFFFFFFFF`（= -1 as signed, 但也是 255 as u64）| ❌ |
-| `30 0A 02` | `0x0000000000000002` | ✅ 唯一 |
+| yoyo 源码 | 存到 state | 范围 |
+|----------|------------|------|
+| `30 0A FF` | 255 | u8 上限 |
+| `30 0A 00` | 0 | u8 下限 |
+| `30 0A 02` | 2 | |
 
-**用 0/1/2 完全避开这个二义性**。这也是为什么所有 trit 投票的代码
-（ternary_signal.ty、indicators.ty 等）都用 0/1/2。
+emit 实现：
+```js
+// src/encode-x64.js:54
+function mov_ri(b,r,val){
+  b.rex(1,0,0,r>7);b.u8(0xB8|(r&7));   // REX.W + mov r64, imm64
+  if(typeof val==='bigint')b.u64(val);
+  ...
+}
+// src/linux-runtime.js:98
+function stSet(id, v) { E.mov_ri(code, RAX, BigInt(v)); E.mov_mr64(...); }
+```
+
+`mov r64, imm64` 是 10 字节指令（**不是 7 字节的 `mov r/m64, imm32` 符号扩展**），
+立即数是**字面 64-bit**。所以 `30 0A FF` 实际存 `0x00000000000000FF = 255`，
+**不是 -1**。
+
+**写 -1 怎么办**？当前 yoyo opcode 表里**没有**直接路径。`0x30` 只能 0-255。
+要写 -1 得用 `movabs rax, 0xFFFFFFFFFFFFFFFF`——需要新增 `0x31` (write signed)
+之类的 opcode，**目前没有**。
+
+**所以 0/1/2 不是"避开二义性"的选择，而是 yoyo opcode 表达能力的硬约束**：
+trit ∈ {-1, 0, +1} 在当前 opcode 表下**写不出来**，只能编码为 {0, 1, 2}（+1 偏移）。
 
 ## 2. handler 库
 
