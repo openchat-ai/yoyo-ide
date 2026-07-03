@@ -5,7 +5,7 @@ const{ELF,alignS,BASE}=require('./elf-builder.js');
 const{buildLinuxStartup,makeLinuxEmit}=require('./linux-runtime.js');
 const{relocateSliceWithLayout,parseBlobRefOffsets,parseBlobHandlers,readWinBlobLayout,isBlobHandlerOps,blobRawFromOps,buildActualRefFromLabels}=require('./blob-handlers.js');
 const{CompileError,validateBeforeCompile,mergeHandlerKeys,resolveFixupsStrict,resolveWinIatFixupsStrict,assertWinImport,assertTextLimit}=require('./compile-validator.js');
-const{KNOWN_OPS,emitStoreByte87,OP_RAW_BYTES}=require('./opcode-emit-x64.js');
+const{KNOWN_OPS,emitStoreByte87,OP_RAW_BYTES,TIR_KEYWORDS}=require('./opcode-emit-x64.js');
 
 const RCX=1,RDX=2,RSP=4,RSI=6,RDI=7,R8=8,R9=9,R12=12,R13=13,R14=14,R15=15;
 const RAX=0;
@@ -25,8 +25,22 @@ function parse(text){
     const line=li+1;
     const t=l.trim();if(!t||t[0]===';'||t[0]==='#')continue;
     const body=t.replace(/;.*$/,'').trim();if(!body)continue;
-    const p=body.split(/\s+/);const op=parseInt(p[0],16);
-    if(isNaN(op))throw new CompileError(`line ${line}: invalid opcode token "${p[0]}"`);
+    let p=body.split(/\s+/);
+    let op;
+    let tirRawHex = false;
+    if(TIR_KEYWORDS[p[0]]!==undefined){
+      // TIR intrinsics form: e.g. "call H_01", "state.set 5 0", "ret"
+      op=TIR_KEYWORDS[p[0]];
+      // For data.blob (0x13) the second arg is a hex literal that may exceed
+      // JS number precision. Mark it so the args mapper below keeps it as a
+      // string instead of converting to a number.
+      if (op === 0x13) tirRawHex = true;
+      p=p.slice(1).map(x=>x.startsWith('H_')?x.slice(2):x);
+      p=[String(op),...p];
+    }else{
+      op=parseInt(p[0],16);
+      if(isNaN(op))throw new CompileError(`line ${line}: invalid opcode token "${p[0]}"`);
+    }
     if(!KNOWN_OPS.has(op)&&op!==0x12&&op!==0x13){
       const bytes=[];
       for(const part of p){
@@ -40,6 +54,8 @@ function parse(text){
       if(x[0]==='s'){const b=[];for(let i=1;i<x.length;i+=2)b.push(parseInt(x.substr(i,2),16)||0);const B=Buffer.from(b);return{t:'s',v:B.toString('utf8'),raw:B};}
       if(op===0xA0){return{t:'h',v:x};}
       if(op===0xA1){if(!/^[0-9a-fA-F]+$/.test(x))throw new CompileError(`line ${line}: invalid hex byte "${x}"`);return{t:'n',v:parseInt(x,16)};}
+      // data.blob (0x13) raw hex arg — keep as string to preserve precision.
+      if (op === 0x13 && tirRawHex) return {t:'h',v:x};
       if(!/^[0-9a-fA-F]+$/.test(x))throw new CompileError(`line ${line}: invalid hex arg "${x}"`);
       return{t:'n',v:parseInt(x,16)};
     });

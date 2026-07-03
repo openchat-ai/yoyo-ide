@@ -37,4 +37,34 @@ function emitStoreByte87(code, loadBase, loadVal, args) {
   }
 }
 
-module.exports = { KNOWN_OPS, OP_RAW_BYTES, OP_MIN_ARGS, emitStoreByte87 };
+/**
+ * TIR intrinsics keywords -> yoyo hex opcode.
+ * Lets .ty files use readable forms (call H_01, state.set 5 0, jcc.eq H_03)
+ * alongside the hex opcode form. Mnemonic strings map 1:1 to a single hex op.
+ * Handler args use H_xx prefix to disambiguate from raw state slot numbers.
+ */
+const TIR_KEYWORDS = {
+  'label': 0x40,
+  'call': 0x41,
+  'jmp': 0x70,
+  'jcc.eq': 0x71, 'jcc.ne': 0x72, 'jcc.lt': 0x73, 'jcc.le': 0x74,
+  'jcc.be': 0x75, 'jcc.gt': 0x76, 'jcc.ja': 0x77,
+  'jcc.jb': 0x78, 'jcc.ae': 0x79, 'jcc.a': 0x7a,
+  'jcc.l': 0x82, 'jcc.g': 0x83,
+  'ret': 0xFF,
+  'state.set': 0x30, 'state.copy': 0x60,
+  'state.add': 0x68, 'state.sub': 0x69,
+  'state.add.imm': 0x61, 'state.sub.imm': 0x62,
+  'state.inc': 0x66, 'state.dec': 0x67,
+  'state.cmp': 0x65, 'state.load.byte': 0x80,
+  'emit.u8': 0xA1,
+  'emit.store.u32': 0x55, 'emit.store.byte': 0x57,
+  'emit.store.byte.imm': 0x87,
+  'alloc': 0x20,
+  'load.file': 0x50, 'write.file': 0x51,
+  'memcpy.data': 0x84, 'memcpy.state': 0x85,
+  'raw.bytes': 0xA0,
+  'string.def': 0x12, 'data.blob': 0x13,
+};
+
+module.exports = { KNOWN_OPS, OP_RAW_BYTES, OP_MIN_ARGS, emitStoreByte87, TIR_KEYWORDS };

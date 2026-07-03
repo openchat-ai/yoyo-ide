@@ -12,7 +12,11 @@ function handlerFileOrder(text) {
   const seen = new Set();
   for (const line of text.split('\n')) {
     const trimmed = line.replace(/;.*$/, '').trim();
-    const m = trimmed.match(/^40\s+([0-9a-fA-F]+)$/);
+    // Hex form: `40 HH` — traditional yoyo bytecode.
+    let m = trimmed.match(/^40\s+([0-9a-fA-F]+)$/);
+    // TIR intrinsics form: `label H_HH` — readable alias, requires H_ prefix
+    // to disambiguate from raw state slot numbers.
+    if (!m) m = trimmed.match(/^label\s+H_([0-9a-fA-F]+)$/);
     if (!m) continue;
     const hh = parseInt(m[1], 16);
     if (!seen.has(hh)) {

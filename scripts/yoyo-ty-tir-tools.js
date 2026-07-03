@@ -37,7 +37,7 @@ function opToTir(op) {
   const argS = (i) => a[i] && (a[i].t === 's') ? JSON.stringify(a[i].v) : '';
 
   switch (o) {
-case 0x12: return `string.def ${argNh(0)} ${argS(1)}`;
+case 0x12: return `string.def ${argNh(0)} ${a[1] && a[1].raw ? 's' + a[1].raw.toString('hex') : (argS(1))}`;
     case 0x13: return `data.blob ${argNh(0)} ${a[1] && a[1].raw ? a[1].raw.toString('hex') : (a[1] ? a[1].v : '')}`;
     case 0x20: return `alloc ${argNh(0)} ${argNh(1)}`;
     case 0x30: return `state.set ${argNh(0)} ${argNh(1)}`;
@@ -90,8 +90,24 @@ function dump(src) {
   out.push('; round-trip safe (verify subcommand proves this)');
   out.push('');
 
-  // top + strings + blobs first
+  // Emit string defs and data blobs first (from raw tokens, before any handler body).
+  // String id is implicit (sequential), matching yoyo.ty convention.
+  for (const t of tokens) {
+    if (t.op === 0x12) {
+      const arg = t.args[1] || (t.args[0] && t.args[0].t === 's' ? t.args[0] : null);
+      const hex = arg && arg.raw ? arg.raw.toString('hex') : (arg && arg.v ? Buffer.from(arg.v, 'utf8').toString('hex') : '');
+      out.push(`  string.def s${hex}    ; hex: 12 s${hex}`);
+    } else if (t.op === 0x13) {
+      const off = t.args[0].v;
+      const arg = t.args[1];
+      const hex = arg && arg.raw ? arg.raw.toString('hex') : (arg && arg.v ? arg.v : '');
+      out.push(`  data.blob ${(off >>> 0).toString(16)} s${hex}    ; hex: 13 ${(off >>> 0).toString(16)} s${hex.slice(0, 32)}...`);
+    }
+  }
+
+  // top ops (call entry, etc.) — skip the strings/blobs already emitted
   for (const op of prog.top) {
+    if (op.op === 0x12 || op.op === 0x13) continue;  // already emitted above
     out.push(`  ${opToTir(op)}    ; hex: ${op.op.toString(16).padStart(2, '0')} ${argHex(op)}`);
   }
 
