@@ -16,6 +16,7 @@ scripts/node-err.txt
 # Test scratch
 *.bin
 *.hex
+!projects/yoyo.ty.hex
 *.log
 *.bak
 *.v1
