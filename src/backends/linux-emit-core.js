@@ -118,11 +118,17 @@ function createEmitContext(strs, strPos, opts = {}) {
     switch (tirOp.kind) {
       case Op.LABEL: code.label('H' + tirOp.hh); break;
       case Op.CALL: E.call_rel(code, 0); code.fixups.push({ p: code.tell() - 4, n: 'H' + tirOp.hh }); break;
+      case Op.TAIL_CALL: {
+        E.jmp_rel(code, 0);
+        code.fixups.push({ p: code.tell() - 4, n: 'H' + tirOp.hh });
+        break;
+      }
       case Op.JMP: code.jmp32('H' + tirOp.hh); break;
       case Op.JCC: code.jcc32(JCC_MAP[tirOp.cond] ?? 0, 'H' + tirOp.hh); break;
       case Op.RET: E.ret(code); break;
       case Op.STATE_SET: linux.stSet(tirOp.slot, tirOp.value); break;
       case Op.STATE_COPY: linux.stGet(RAX, tirOp.src); linux.stPut(tirOp.dst, RAX); break;
+      case Op.STATE_GET: linux.stGet(RAX, tirOp.slot); break;
       case Op.STATE_ADD_IMM: linux.stGet(RAX, tirOp.slot); E.add_ri(code, RAX, tirOp.imm); linux.stPut(tirOp.slot, RAX); break;
       case Op.STATE_SUB_IMM: linux.stGet(RAX, tirOp.slot); E.sub_ri(code, RAX, tirOp.imm); linux.stPut(tirOp.slot, RAX); break;
       case Op.STATE_INC: linux.stGet(RAX, tirOp.slot); E.add_ri(code, RAX, 1); linux.stPut(tirOp.slot, RAX); break;
@@ -140,6 +146,7 @@ function createEmitContext(strs, strPos, opts = {}) {
         break;
       }
       case Op.EMIT_U8: code.u8(tirOp.value & 0xff); break;
+      case Op.EMIT_U8_SLOT: linux.stGet(RAX, tirOp.slot); code.u8(RAX & 0xff); break;
       case Op.EMIT_STORE_U32: linux.stGet(RDX, tirOp.addrSlot); linux.stGet(RAX, tirOp.valSlot); code.u8(0x89); code.u8(0x02); break;
       case Op.EMIT_STORE_BYTE: {
         linux.stGet(RDX, tirOp.base);
@@ -147,6 +154,12 @@ function createEmitContext(strs, strPos, opts = {}) {
         E.add_rr(code, RDX, R8);
         linux.stGet(RAX, tirOp.val);
         code.u8(0x88); code.u8(0x02);
+        break;
+      }
+      case Op.EMIT_STORE_BYTE_IMM: {
+        emitStoreByte87(code, (s) => linux.stGet(RDX, s), (s) => linux.stGet(RAX, s), {
+          0: { v: tirOp.addrSlot }, 1: { v: tirOp.valSlot }, 2: { v: tirOp.offset || 0 },
+        });
         break;
       }
       case Op.LOAD_FILE: linux.emitLoadFile(tirOp.stateSlot, tirOp.stringId); break;
@@ -169,6 +182,7 @@ function createEmitContext(strs, strPos, opts = {}) {
       case Op.STRING_DEF:
       case Op.DATA_BLOB:
       case Op.NOP:
+      case Op.BLOB_LINE:
         break;
       default:
         throw new CompileError(`unimplemented TIR op kind ${tirOp.kind}`);

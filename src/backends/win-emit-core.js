@@ -203,11 +203,18 @@ function createWinEmitContext(prog, opts = {}) {
     switch (tirOp.kind) {
       case Op.LABEL: code.label('H' + tirOp.hh); break;
       case Op.CALL: E.call_rel(code, 0); code.fixups.push({ p: code.tell() - 4, n: 'H' + tirOp.hh }); break;
+      case Op.TAIL_CALL: {
+        // tail call: emit jmp instead of call to save one ret+jmp pair
+        E.jmp_rel(code, 0);
+        code.fixups.push({ p: code.tell() - 4, n: 'H' + tirOp.hh });
+        break;
+      }
       case Op.JMP: code.jmp32('H' + tirOp.hh); break;
       case Op.JCC: code.jcc32(JCC_MAP[tirOp.cond] ?? 0, 'H' + tirOp.hh); break;
       case Op.RET: E.ret(code); break;
       case Op.STATE_SET: stSet(tirOp.slot, tirOp.value); break;
       case Op.STATE_COPY: stGet(RAX, tirOp.src); stPut(tirOp.dst, RAX); break;
+      case Op.STATE_GET: stGet(RAX, tirOp.slot); break;
       case Op.STATE_ADD_IMM: stGet(RAX, tirOp.slot); E.add_ri(code, RAX, tirOp.imm); stPut(tirOp.slot, RAX); break;
       case Op.STATE_SUB_IMM: stGet(RAX, tirOp.slot); E.sub_ri(code, RAX, tirOp.imm); stPut(tirOp.slot, RAX); break;
       case Op.STATE_INC: stGet(RAX, tirOp.slot); E.add_ri(code, RAX, 1); stPut(tirOp.slot, RAX); break;
@@ -225,10 +232,17 @@ function createWinEmitContext(prog, opts = {}) {
         break;
       }
       case Op.EMIT_U8: code.u8(tirOp.value & 0xff); break;
+      case Op.EMIT_U8_SLOT: stGet(RAX, tirOp.slot); code.u8(RAX & 0xff); break;
       case Op.EMIT_STORE_U32: stGet(RDX, tirOp.addrSlot); stGet(RAX, tirOp.valSlot); code.u8(0x89); code.u8(0x02); break;
       case Op.EMIT_STORE_BYTE: {
         stGet(RDX, tirOp.base); stGet(R8, tirOp.index); E.add_rr(code, RDX, R8);
         stGet(RAX, tirOp.val); code.u8(0x88); code.u8(0x02); break;
+      }
+      case Op.EMIT_STORE_BYTE_IMM: {
+        emitStoreByte87(code, (s) => stGet(RDX, s), (s) => stGet(RAX, s), {
+          0: { v: tirOp.addrSlot }, 1: { v: tirOp.valSlot }, 2: { v: tirOp.offset || 0 },
+        });
+        break;
       }
       case Op.LOAD_FILE: emitLoadFile(tirOp.stateSlot, tirOp.stringId); break;
       case Op.WRITE_FILE: emitWriteFile(tirOp.fdSlot, tirOp.bufSlot, tirOp.lenSlot); break;
@@ -250,6 +264,7 @@ function createWinEmitContext(prog, opts = {}) {
       case Op.STRING_DEF:
       case Op.DATA_BLOB:
       case Op.NOP:
+      case Op.BLOB_LINE:
         break;
       default:
         throw new CompileError(`unimplemented TIR op kind ${tirOp.kind}`);

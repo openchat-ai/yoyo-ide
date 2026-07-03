@@ -22,6 +22,7 @@ const Op = {
   EMIT_U8_SLOT: 'emit.u8_slot',
   EMIT_STORE_U32: 'emit.store_u32',
   EMIT_STORE_BYTE: 'emit.store_byte',
+  EMIT_STORE_BYTE_IMM: 'emit.store_byte_imm',
   ALLOC: 'alloc',
   LOAD_FILE: 'intrinsic.load_file',
   WRITE_FILE: 'intrinsic.write_file',

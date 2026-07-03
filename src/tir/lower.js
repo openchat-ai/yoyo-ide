@@ -87,6 +87,8 @@ function lowerOpcode(op, args) {
       return [{ kind: Op.STATE_CMP, a: argN(a, 0), b: argN(a, 1) }];
     case 0x80:
       return [{ kind: Op.STATE_LOAD_BYTE, dst: argN(a, 0), base: argN(a, 1), offset: argN(a, 2) }];
+    case 0x87:
+      return [{ kind: Op.EMIT_STORE_BYTE_IMM, addrSlot: argN(a, 0), valSlot: argN(a, 1), offset: argN(a, 2) || 0 }];
     case 0x20:
       return [{ kind: Op.ALLOC, slot: argN(a, 0), size: argN(a, 1) }];
     case 0x50:
