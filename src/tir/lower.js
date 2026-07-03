@@ -31,8 +31,12 @@ function splitHandlers(text) {
 
   for (const t of tokens) {
     if (t.op === 0x40) {
-      current = t.args[0].v;
-      if (!handlers.has(current)) handlers.set(current, []);
+      if (current === null) {
+        current = t.args[0].v;
+        if (!handlers.has(current)) handlers.set(current, []);
+      } else {
+        handlers.get(current).push(t);
+      }
       continue;
     }
     if (current === null) top.push(t);
