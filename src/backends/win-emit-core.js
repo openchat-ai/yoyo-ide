@@ -171,8 +171,7 @@ function createWinEmitContext(prog, opts = {}) {
       E.mov_mr(code, RDX, a[2] ? a[2].v : 0, RAX, true);
     } else if (o === 0x84) {
       stGet(RDI, a[0].v);
-      stGet(RSI, 8);
-      E.add_ri(code, RSI, a[1].v);
+      ld(RSI, a[1].v);
       E.mov_ri(code, RCX, BigInt(a[2].v));
       code.u8(0xF3); code.u8(0xA4);
     } else if (o === 0x85) {
@@ -261,6 +260,9 @@ function createWinEmitContext(prog, opts = {}) {
     E.mov_ri(code, RCX, 0n); E.mov_ri(code, RDX, 0x20000n);
     E.mov_ri(code, R8, 0x3000n); E.mov_ri(code, R9, 0x40n);
     ci('KERNEL32.dll.VirtualAlloc'); E.mov_rr(code, R15, RAX);
+    const leaData = code.tell();
+    E.lea_rip(code, 0, dr - (CODE_RVA + leaData + 7));
+    E.mov_mr64(code, R15, 8 * 8, 0);
     E.mov_ri(code, RCX, -11n); ci('KERNEL32.dll.GetStdHandle'); E.mov_rr(code, R14, RAX);
   }
 
