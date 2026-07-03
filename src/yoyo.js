@@ -50,12 +50,13 @@ function parse(text){
       r.push({op:OP_RAW_BYTES,rawBytes:bytes,line});
       continue;
     }
-    const args=p.slice(1).map(x=>{
+const args=p.slice(1).map((x, i)=>{
       if(x[0]==='s'){const b=[];for(let i=1;i<x.length;i+=2)b.push(parseInt(x.substr(i,2),16)||0);const B=Buffer.from(b);return{t:'s',v:B.toString('utf8'),raw:B};}
       if(op===0xA0){return{t:'h',v:x};}
       if(op===0xA1){if(!/^[0-9a-fA-F]+$/.test(x))throw new CompileError(`line ${line}: invalid hex byte "${x}"`);return{t:'n',v:parseInt(x,16)};}
-      // data.blob (0x13) raw hex arg — keep as string to preserve precision.
-      if (op === 0x13 && tirRawHex) return {t:'h',v:x};
+      // data.blob (0x13) raw hex arg — args[1] is the long hex blob; keep as
+      // string to preserve precision. args[0] is the offset (number).
+      if (op === 0x13 && tirRawHex && i === 1) return {t:'h',v:x};
       if(!/^[0-9a-fA-F]+$/.test(x))throw new CompileError(`line ${line}: invalid hex arg "${x}"`);
       return{t:'n',v:parseInt(x,16)};
     });
