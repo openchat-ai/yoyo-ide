@@ -159,7 +159,7 @@ TIR_BOOTSTRAP=1 bash scripts/bootstrap-native.sh 3
 | Milestone | Criterion | Status |
 |-----------|-----------|--------|
 | M1 | `tir-check` reports ≥120 handlers, ≥500 fixups on `projects/yoyo.ty` | **PASS** |
-| M2 | TIR-x64 gen1 byte-match Node gen1 (Linux) | **PASS** (0 diffs) |
+| M2 | TIR-x64 gen1 byte-match Node gen1 (Linux + Windows) | **PASS** (0 diffs both) |
 | M3 | `bootstrap-native.sh 3` PASS via TIR path | **FAIL** (scan gen2) |
 | M4 | `yoyo-gen` outputs TIR, not 2500-line meta-source | **TBD** |
 

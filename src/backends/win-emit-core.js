@@ -427,10 +427,52 @@ function compileFromAnalyzed(prog, opts = {}) {
   return ctx.finishPe();
 }
 
+const Op = require('../tir/ops.js').Op;
+
+function compileFromTirModule(mod, opts = {}) {
+  const prog = { strings: mod.strings || {}, blobs: mod.blobs || [], top: [], handlers: {} };
+  const ctx = createWinEmitContext(prog, opts);
+  ctx.emitStartup();
+
+  const topFn = mod.functions.find(f => f.name === '__top');
+  if (topFn) {
+    for (const block of topFn.blocks) {
+      for (const op of block.ops) {
+        if (op.kind !== Op.STRING_DEF && op.kind !== Op.DATA_BLOB) {
+          ctx.emitTirOp(op);
+        }
+      }
+    }
+  }
+  ctx.emitExit();
+
+  const order = opts.handlerOrder === 'file'
+    ? (mod.handlerOrder || [])
+    : [...(mod.handlerOrder || [])].sort((a, b) => a - b);
+
+  for (const hh of order) {
+    const fn = mod.functions.find(f => f.name === 'H' + hh.toString(16));
+    if (!fn) continue;
+    ctx.code.label('H' + hh);
+    for (const block of fn.blocks) {
+      for (const op of block.ops) {
+        if (op.kind === Op.LABEL) ctx.code.label('H' + op.hh);
+        else if (op.kind !== Op.STRING_DEF && op.kind !== Op.DATA_BLOB) {
+          ctx.emitTirOp(op);
+        }
+      }
+    }
+    E.ret(ctx.code);
+  }
+  while (ctx.code.tell() < TEXT_VS) ctx.code.u8(0x90);
+  return ctx.finishPe();
+}
+
 module.exports = {
   createWinEmitContext,
   extractWinHandlerSlices,
   extractTirHandlerSlices,
   compileFromAnalyzed,
+  compileFromTirModule,
   buildStringLayout,
 };
