@@ -431,14 +431,43 @@ if (!isLinux && useNativeOverlay) {
 }
 
 C('Write output ELF');
-// DEBUG TRACE: write "M\n" to stderr (fd=2)
-// mov rax, 1 ; mov rdi, 2 ; lea rsi, [rip+offset] ; mov rdx, 2 ; syscall ; .ascii "M\n"
-L('48 c7 c0 01 00 00 00'); L(INC(0x0E));  // mov rax, 1
-L('48 c7 c7 02 00 00 00'); L(INC(0x0E));  // mov rdi, 2
-L('48 8d 35 0a 00 00 00'); L(INC(0x0E));  // lea rsi, [rip+0xa]  (skip .str)
-L('48 c7 c2 02 00 00 00'); L(INC(0x0E));  // mov rdx, 2
-L('0f 05');                              // syscall
-L('4d 0a');                              // .str: "M\n"
+// DEBUG TRACE: write 'M\n' to stderr before WriteFile
+// Use 0xA1 opcode (single-byte emit) for raw bytes so both Node and
+// scan-emit produce identical x64.
+L('a1 48'); L(INC(0x0E));  // 48
+L('a1 c7'); L(INC(0x0E));  // c7
+L('a1 c0'); L(INC(0x0E));  // c0
+L('a1 01'); L(INC(0x0E));  // 01
+L('a1 00'); L(INC(0x0E));  // 00
+L('a1 00'); L(INC(0x0E));  // 00
+L('a1 00'); L(INC(0x0E));  // 00
+L('a1 48'); L(INC(0x0E));  // 48 (mov rax, 1 - completes 48 c7 c0 01 00 00 00)
+L('a1 c7'); L(INC(0x0E));  // c7
+L('a1 c7'); L(INC(0x0E));  // c7
+L('a1 02'); L(INC(0x0E));  // 02
+L('a1 00'); L(INC(0x0E));  // 00
+L('a1 00'); L(INC(0x0E));  // 00
+L('a1 00'); L(INC(0x0E));  // 00
+L('a1 00'); L(INC(0x0E));  // 00
+L('a1 48'); L(INC(0x0E));  // 48 (mov rdi, 2)
+L('a1 8d'); L(INC(0x0E));  // 8d
+L('a1 35'); L(INC(0x0E));  // 35
+L('a1 09'); L(INC(0x0E));  // 09 (disp32 to skip 7+2+2 = 11 bytes)
+L('a1 00'); L(INC(0x0E));  // 00
+L('a1 00'); L(INC(0x0E));  // 00
+L('a1 00'); L(INC(0x0E));  // 00
+L('a1 48'); L(INC(0x0E));  // 48 (mov rdx, 2)
+L('a1 c7'); L(INC(0x0E));  // c7
+L('a1 c2'); L(INC(0x0E));  // c2
+L('a1 02'); L(INC(0x0E));  // 02
+L('a1 00'); L(INC(0x0E));  // 00
+L('a1 00'); L(INC(0x0E));  // 00
+L('a1 00'); L(INC(0x0E));  // 00
+L('a1 00'); L(INC(0x0E));  // 00
+L('a1 0f'); L(INC(0x0E));  // 0f
+L('a1 05'); L(INC(0x0E));  // 05 (syscall)
+L('a1 4d'); L(INC(0x0E));  // 4d ('M')
+L('a1 0a'); L(INC(0x0E));  // 0a ('\n')
 L(SET(0x0E, tplWriteLen));
 L('51 02 01 0E');
 if (isLinux) {
