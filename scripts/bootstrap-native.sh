@@ -106,8 +106,14 @@ if cmp -s "$TMP_DIR/gen2.elf" "$TMP_DIR/gen3.elf"; then
   echo "gen2 vs gen3: PASS (byte-identical)"
   echo "bootstrap-native: PASS"
 else
-  DIFFS=$(cmp -l "$TMP_DIR/gen2.elf" "$TMP_DIR/gen3.elf" 2>/dev/null | wc -l || true)
-  echo "gen2 vs gen3: FAIL ($DIFFS differing byte pairs)"
+  if [[ -f "$TMP_DIR/gen3.elf" ]]; then
+    DIFFS=$(cmp -l "$TMP_DIR/gen2.elf" "$TMP_DIR/gen3.elf" 2>/dev/null | wc -l || true)
+    echo "gen2 vs gen3: FAIL ($DIFFS differing byte pairs)"
+  else
+    echo "gen2 vs gen3: FAIL (gen3.elf not produced, likely timeout)"
+  fi
   echo "bootstrap-native: FAIL (Stage 3 - see docs/PENDING.md)"
-  exit 1
+  if [[ "${PRESERVE_AFTER_TIMEOUT:-0}" != "1" ]]; then
+    exit 1
+  fi
 fi
