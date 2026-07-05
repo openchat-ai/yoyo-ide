@@ -1,0 +1,44 @@
+name: Windows Native Bootstrap
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  bootstrap-native:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Generate yoyo.ty (win)
+        run: node src/yoyo-gen.js --target=win
+
+      - name: Compile gen1
+        run: node src/yoyo.js projects/yoyo.ty build/yoyo.exe
+
+      - name: gen1 → gen2 (self-compile)
+        run: |
+          Copy-Item projects/yoyo.ty input.ky
+          .\build\yoyo.exe
+          Copy-Item output.exe gen2.exe
+
+      - name: gen2 → gen3
+        run: |
+          Copy-Item projects/yoyo.ty input.ky
+          .\gen2.exe
+          Copy-Item output.exe gen3.exe
+
+      - name: Check gen2 ≡ gen3
+        run: |
+          $h2 = (Get-FileHash gen2.exe).Hash
+          $h3 = (Get-FileHash gen3.exe).Hash
+          if ($h2 -eq $h3) { Write-Host "PASS: gen2 ≡ gen3 ($h2)" } else { Write-Host "FAIL: gen2 ($h2) != gen3 ($h3)"; exit 1 }
