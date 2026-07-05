@@ -47,16 +47,18 @@ jobs:
           rm -f output
           cp projects/yoyo.ty input.ky
           set +e
-          timeout --foreground --kill-after=10s 30s strace -f -o build/gen2.strace ./build/gen2.elf
+          timeout --foreground --kill-after=10s 240s strace -f -o build/gen2.strace ./build/gen2.elf
           code=$?
           set -e
-          echo "gen2.elf exited with $code"
+          echo "gen2.elf exited with $code (124=timeout, 137=sigkill, 0=success)"
           if [[ -f output ]]; then
             echo "gen2.elf produced output:"
             ls -la output
             cp output build/gen2-output.bin
+          else
+            echo "gen2.elf did NOT produce output"
           fi
-        timeout-minutes: 3
+        timeout-minutes: 6
 
       - name: Compare last 30 strace lines of gen1 vs gen2
         if: always()
