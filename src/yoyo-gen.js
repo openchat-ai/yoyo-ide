@@ -75,10 +75,14 @@ function buildStartup() {
   return b.b.slice(0, b.tell());
 }
 const startupBlob = buildStartup();
-const STARTUP_JMP_DISP_OFF = startupBlob.length - 4;
 
 const LINUX_CODE_RVA = BASE + 0x1000;
 const linuxOutputStartup = buildLinuxOutputStartup(LINUX_CODE_RVA + TEXT_VS);
+
+const STARTUP_JMP_DISP_OFF = (isLinux ? linuxOutputStartup.length : startupBlob.length) - 4;
+// Both startup blobs now end with jmp_rel (buildStartup / buildLinuxOutputStartup),
+// so the rel32 offset is (blob_length - 4) for either platform.
+
 const maxStartupLen = Math.max(startupBlob.length, linuxOutputStartup.length);
 const TPL_BLOB_DATA = 0x4000;
 const tplBlobELF = new ELF();

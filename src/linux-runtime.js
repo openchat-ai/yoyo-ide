@@ -30,6 +30,7 @@ function buildLinuxOutputStartup(dataRva) {
   E.lea_rip(b, RAX, dataRva - (CODE_RVA + leaData + 7));
   E.mov_mr64(b, R15, 8 * 8, RAX);
   E.mov_ri(b, R14, 1n);
+  E.jmp_rel(b, 0);
   return b.b.slice(0, b.tell());
 }
 
