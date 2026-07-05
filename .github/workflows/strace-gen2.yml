@@ -47,29 +47,39 @@ jobs:
           rm -f output
           cp projects/yoyo.ty input.ky
           set +e
-          # Run gen2.elf under strace. In parallel, poll /proc/PID/syscall every 2s
-          # to see what gen2.elf is doing when "hanging" (no syscalls).
+          # Run gen2.elf under strace. In parallel, scan ALL /proc for gen2.elf
+          # every 5 seconds and report /proc/PID/syscall + wchan.
           ( strace -f -o build/gen2.strace ./build/gen2.elf ) &
-          GEN2_PID=$!
-          echo "gen2.elf PID: $GEN2_PID"
-          for i in $(seq 1 30); do
-            sleep 8
-            # find the actual ELF pid (strace forks)
-            for pid in $(ls /proc/ 2>/dev/null | grep -E '^[0-9]+$' | head -20); do
-              if [[ -e "/proc/$pid/exe" ]] && readlink "/proc/$pid/exe" 2>/dev/null | grep -q gen2; then
+          STRACE_PID=$!
+          echo "strace wrapper PID: $STRACE_PID"
+          for i in $(seq 1 8); do
+            sleep 5
+            # find ALL processes whose exe path contains gen2.elf
+            found=0
+            for pid in $(ls /proc/ 2>/dev/null | grep -E '^[0-9]+$'); do
+              [[ ! -r "/proc/$pid/comm" ]] && continue
+              comm=$(cat /proc/$pid/comm 2>/dev/null)
+              if [[ "$comm" == *gen2* ]] || readlink "/proc/$pid/exe" 2>/dev/null | grep -q gen2; then
                 state=$(cat /proc/$pid/wchan 2>/dev/null)
                 syscall=$(cat /proc/$pid/syscall 2>/dev/null | head -c 80)
-                echo "[$i] PID=$pid wchan=$state syscall=$syscall"
+                status=$(cat /proc/$pid/status 2>/dev/null | grep -E '^(State|Name)' | head -2 | tr '\n' ' ')
+                echo "[$i] gen2 match PID=$pid comm=$comm wchan=$state syscall=$syscall"
+                echo "    status: $status"
+                found=1
               fi
             done
-            # If gen2.elf process no longer exists, break
-            if ! kill -0 $GEN2_PID 2>/dev/null && ! ls /proc/*/exe 2>/dev/null | xargs -I {} readlink {} 2>/dev/null | grep -q gen2; then
-              echo "[$i] gen2.elf finished"
-              break
+            if [[ $found -eq 0 ]]; then
+              echo "[$i] no gen2 process found"
+            fi
+            # Also check overall strace activity
+            if [[ -f build/gen2.strace ]]; then
+              wc=$(wc -l < build/gen2.strace)
+              echo "[$i] gen2.strace lines so far: $wc"
             fi
           done
-          # Kill strace gen2 wrapper if still running
-          wait $GEN2_PID 2>/dev/null
+          # Kill strace if still running
+          kill $STRACE_PID 2>/dev/null
+          wait $STRACE_PID 2>/dev/null
           code=$?
           set -e
           echo "gen2.elf strace wrapper exit: $code"
