@@ -27,22 +27,24 @@ jobs:
 
       - name: Strace gen2.elf reading yoyo.ty
         run: |
+          chmod +x build/gen2.elf
+          ls -la build/gen2.elf
           cp projects/yoyo.ty input.ky
           set +e
-          timeout --foreground 60s strace -f -o build/gen2.strace build/gen2.elf
+          timeout --foreground 60s strace -f -o build/gen2.strace ./build/gen2.elf
           code=$?
           set -e
           echo "gen2.elf exited with $code"
           if [[ -f output ]]; then
             echo "gen2.elf DID produce output:"
             ls -la output
-            mv output build/gen2-output.bin
+            cp output build/gen2-output.bin
           else
             echo "gen2.elf did NOT produce output"
           fi
           if [[ -f build/gen2.strace ]]; then
-            echo "=== Last 30 strace events ==="
-            tail -n 30 build/gen2.strace
+            echo "=== Last 50 strace events ==="
+            tail -n 50 build/gen2.strace
             echo "=== syscall frequency (top 20) ==="
             awk '{print $1}' build/gen2.strace | grep -v "^$" | sort | uniq -c | sort -rn | head -20
             echo "=== strace line count ==="
