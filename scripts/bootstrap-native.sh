@@ -8,8 +8,13 @@ cd "$ROOT_DIR"
 
 STAGES="${1:-3}"
 TIR_BOOTSTRAP="${TIR_BOOTSTRAP:-0}"
+PRESERVE="${PRESERVE:-0}"
 TMP_DIR="$(mktemp -d /tmp/yoyo-native-bs-XXXXXX)"
-cleanup() { rm -f "$ROOT_DIR/input.ky" "$ROOT_DIR/output" "$ROOT_DIR/output.exe"; rm -rf "$TMP_DIR"; }
+if [[ "$PRESERVE" == "1" ]]; then
+  cleanup() { :; }
+else
+  cleanup() { rm -f "$ROOT_DIR/input.ky" "$ROOT_DIR/output" "$ROOT_DIR/output.exe"; rm -rf "$TMP_DIR"; }
+fi
 trap cleanup EXIT
 
 echo "=== yoyo native Linux bootstrap (TIR_BOOTSTRAP=${TIR_BOOTSTRAP}) ==="

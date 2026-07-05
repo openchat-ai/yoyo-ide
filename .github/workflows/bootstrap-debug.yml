@@ -1,0 +1,93 @@
+name: Linux Bootstrap Debug (Stage 3 fix investigation)
+
+on:
+  workflow_dispatch:
+    inputs:
+      stages:
+        description: 'Bootstrap stages (2 or 3)'
+        required: false
+        default: '3'
+      timeout_sec:
+        description: 'Per-stage timeout seconds'
+        required: false
+        default: '120'
+      preserve:
+        description: 'Preserve /tmp/yoyo-native-bs-* on exit (use for debug)'
+        required: false
+        default: '1'
+
+jobs:
+  bootstrap-debug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Apply partial timeout override (env var)
+        run: |
+          echo "STAGES=${{ github.event.inputs.stages }}" >> $GITHUB_ENV
+          echo "PRESERVE=${{ github.event.inputs.preserve }}" >> $GITHUB_ENV
+
+      - name: Native Linux bootstrap (debug)
+        run: |
+          PRESERVE=${{ github.event.inputs.preserve }} bash scripts/bootstrap-native.sh ${{ github.event.inputs.stages }} || true
+        timeout-minutes: 15
+
+      - name: Compute byte-level diff between gen1.elf and gen2.elf
+        if: always()
+        run: |
+          mkdir -p /tmp/diff-artifacts
+          shopt -s nullglob
+          for d in /tmp/yoyo-native-bs-*/; do
+            if [ -f "$d/gen1.elf" ] && [ -f "$d/gen2.elf" ]; then
+              echo "===== DIFF gen1.elf vs gen2.elf ($d) =====" | tee -a /tmp/diff-artifacts/diff-summary.txt
+              ls -la "$d/gen1.elf" "$d/gen2.elf" | tee -a /tmp/diff-artifacts/diff-summary.txt
+              cmp "$d/gen1.elf" "$d/gen2.elf" 2>/dev/null
+              echo "----- sizes -----" | tee -a /tmp/diff-artifacts/diff-summary.txt
+              wc -c "$d/gen1.elf" "$d/gen2.elf" | tee -a /tmp/diff-artifacts/diff-summary.txt
+              echo "----- hash -----" | tee -a /tmp/diff-artifacts/diff-summary.txt
+              sha256sum "$d/gen1.elf" "$d/gen2.elf" | tee -a /tmp/diff-artifacts/diff-summary.txt
+              echo "----- if gen3.elf exists, diff against gen2.elf -----" | tee -a /tmp/diff-artifacts/diff-summary.txt
+              if [ -f "$d/gen3.elf" ]; then
+                ls -la "$d/gen3.elf" | tee -a /tmp/diff-artifacts/diff-summary.txt
+                wc -c "$d/gen3.elf" | tee -a /tmp/diff-artifacts/diff-summary.txt
+                sha256sum "$d/gen3.elf" | tee -a /tmp/diff-artifacts/diff-summary.txt
+                echo "byte diff count vs gen2.elf:" | tee -a /tmp/diff-artifacts/diff-summary.txt
+                cmp -l "$d/gen2.elf" "$d/gen3.elf" 2>/dev/null | wc -l | tee -a /tmp/diff-artifacts/diff-summary.txt
+                echo "first 50 byte diffs (offset gen2-byte gen3-byte):" | tee -a /tmp/diff-artifacts/diff-summary.txt
+                cmp -l "$d/gen2.elf" "$d/gen3.elf" 2>/dev/null | head -50 | tee -a /tmp/diff-artifacts/diff-summary.txt
+                # Save full diff to file
+                cmp -l "$d/gen2.elf" "$d/gen3.elf" 2>/dev/null > /tmp/diff-artifacts/gen2-vs-gen3-byte-diffs.txt
+              fi
+            fi
+          done
+          shopt -u nullglob
+
+      - name: Upload diff artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-bootstrap-diff-${{ github.run_id }}
+          if-no-files-found: ignore
+          path: /tmp/diff-artifacts/
+          retention-days: 14
+
+      - name: Upload debug artifacts (preserved gen1/gen2/gen3)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-bootstrap-debug-${{ github.run_id }}
+          if-no-files-found: ignore
+          path: |
+            build/yoyo
+            build/gen2.elf
+            /tmp/yoyo-native-bs-*/gen1.elf
+            /tmp/yoyo-native-bs-*/gen2.elf
+            /tmp/yoyo-native-bs-*/gen3.elf
+            /tmp/yoyo-native-bs-*/input.ky
+          retention-days: 14

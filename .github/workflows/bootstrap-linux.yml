@@ -21,14 +21,3 @@ jobs:
 
       - name: Native Linux bootstrap (gen2 ≡ gen3)
         run: bash scripts/bootstrap-native.sh 3
-
-      - name: Upload gen artifacts (gen2 preserved even on failure)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-bootstrap-elfs
-          if-no-files-found: ignore
-          path: |
-            build/gen2.elf
-            build/yoyo
-            /tmp/yoyo-native-bs-*/
