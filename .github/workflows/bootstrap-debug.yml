@@ -41,32 +41,38 @@ jobs:
       - name: Compute byte-level diff between gen1.elf and gen2.elf
         if: always()
         run: |
+          set +e
           mkdir -p /tmp/diff-artifacts
           shopt -s nullglob
           for d in /tmp/yoyo-native-bs-*/; do
             if [ -f "$d/gen1.elf" ] && [ -f "$d/gen2.elf" ]; then
-              echo "===== DIFF gen1.elf vs gen2.elf ($d) =====" | tee -a /tmp/diff-artifacts/diff-summary.txt
-              ls -la "$d/gen1.elf" "$d/gen2.elf" | tee -a /tmp/diff-artifacts/diff-summary.txt
-              cmp "$d/gen1.elf" "$d/gen2.elf" 2>/dev/null
-              echo "----- sizes -----" | tee -a /tmp/diff-artifacts/diff-summary.txt
-              wc -c "$d/gen1.elf" "$d/gen2.elf" | tee -a /tmp/diff-artifacts/diff-summary.txt
-              echo "----- hash -----" | tee -a /tmp/diff-artifacts/diff-summary.txt
-              sha256sum "$d/gen1.elf" "$d/gen2.elf" | tee -a /tmp/diff-artifacts/diff-summary.txt
-              echo "----- if gen3.elf exists, diff against gen2.elf -----" | tee -a /tmp/diff-artifacts/diff-summary.txt
-              if [ -f "$d/gen3.elf" ]; then
-                ls -la "$d/gen3.elf" | tee -a /tmp/diff-artifacts/diff-summary.txt
-                wc -c "$d/gen3.elf" | tee -a /tmp/diff-artifacts/diff-summary.txt
-                sha256sum "$d/gen3.elf" | tee -a /tmp/diff-artifacts/diff-summary.txt
-                echo "byte diff count vs gen2.elf:" | tee -a /tmp/diff-artifacts/diff-summary.txt
-                cmp -l "$d/gen2.elf" "$d/gen3.elf" 2>/dev/null | wc -l | tee -a /tmp/diff-artifacts/diff-summary.txt
-                echo "first 50 byte diffs (offset gen2-byte gen3-byte):" | tee -a /tmp/diff-artifacts/diff-summary.txt
-                cmp -l "$d/gen2.elf" "$d/gen3.elf" 2>/dev/null | head -50 | tee -a /tmp/diff-artifacts/diff-summary.txt
-                # Save full diff to file
-                cmp -l "$d/gen2.elf" "$d/gen3.elf" 2>/dev/null > /tmp/diff-artifacts/gen2-vs-gen3-byte-diffs.txt
-              fi
+              {
+                echo "===== DIFF gen1.elf vs gen2.elf ($d) ====="
+                ls -la "$d/gen1.elf" "$d/gen2.elf"
+                echo "----- sizes -----"
+                wc -c "$d/gen1.elf" "$d/gen2.elf"
+                echo "----- hash -----"
+                sha256sum "$d/gen1.elf" "$d/gen2.elf"
+                echo "===== byte-level diff (offset gen1-byte gen2-byte): ====="
+                cmp -l "$d/gen1.elf" "$d/gen2.elf" | head -100
+                echo "===== total differing byte count ====="
+                cmp -l "$d/gen1.elf" "$d/gen2.elf" 2>/dev/null | wc -l
+                echo "===== if gen3.elf exists, diff against gen2.elf ====="
+                if [ -f "$d/gen3.elf" ]; then
+                  ls -la "$d/gen3.elf"
+                  wc -c "$d/gen3.elf"
+                  sha256sum "$d/gen3.elf"
+                  echo "byte diff count vs gen2.elf:"
+                  cmp -l "$d/gen2.elf" "$d/gen3.elf" 2>/dev/null | wc -l
+                  echo "first 50 byte diffs (offset gen2-byte gen3-byte):"
+                  cmp -l "$d/gen2.elf" "$d/gen3.elf" 2>/dev/null | head -50
+                  cmp -l "$d/gen2.elf" "$d/gen3.elf" 2>/dev/null > /tmp/diff-artifacts/gen2-vs-gen3-byte-diffs.txt
+                fi
+              } >> /tmp/diff-artifacts/diff-summary.txt
             fi
           done
           shopt -u nullglob
+          exit 0
 
       - name: Upload diff artifact
         if: always()
