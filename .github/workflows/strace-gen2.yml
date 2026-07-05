@@ -15,21 +15,18 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Build gen1.elf
+      - name: Build gen1.elf + gen2.elf
         run: |
-          bash scripts/bootstrap-native.sh 2 || true
-        timeout-minutes: 2
-
-      - name: Stage3 build (gen3.elf if not hangs)
-        run: |
-          # Find freshest tmp dir
+          PRESERVE=1 bash scripts/bootstrap-native.sh 2
+          ls -la /tmp/yoyo-native-bs-*/
           TD=$(ls -dt /tmp/yoyo-native-bs-*/ | head -1)
-          GEN1="$TD/gen1.elf"
           GEN2="$TD/gen2.elf"
           cp "$GEN2" build/gen2.elf
           ls -la build/gen2.elf
-          # Run gen2.elf reading yoyo.ty with strace, ~60s budget
-          echo "=== Strace gen2.elf reading yoyo.ty ==="
+        timeout-minutes: 2
+
+      - name: Strace gen2.elf reading yoyo.ty
+        run: |
           cp projects/yoyo.ty input.ky
           set +e
           timeout --foreground 60s strace -f -o build/gen2.strace build/gen2.elf
@@ -48,7 +45,7 @@ jobs:
             tail -n 30 build/gen2.strace
             echo "=== syscall frequency (top 20) ==="
             awk '{print $1}' build/gen2.strace | grep -v "^$" | sort | uniq -c | sort -rn | head -20
-            echo "=== bracktrace: count events by syscall ==="
+            echo "=== strace line count ==="
             wc -l build/gen2.strace
           fi
         timeout-minutes: 3
