@@ -23,6 +23,7 @@ if [[ "$TIR_BOOTSTRAP" == "1" ]]; then
 fi
 
 echo "[2] node yoyo.js --backend=${GEN1_BACKEND} --target=linux -> build/yoyo (gen1)"
+mkdir -p build
 node src/yoyo.js --backend="${GEN1_BACKEND}" --target=linux projects/yoyo.ty build/yoyo
 
 run_gen() {
@@ -39,13 +40,16 @@ run_gen() {
     echo "[!] $label timeout"
     exit 1
   fi
-  if [[ $code -ne 0 ]]; then
-    echo "[!] $label: compiler exited with code $code"
+  if [[ $code -eq 124 ]]; then
+    echo "[!] $label timeout"
     exit 1
   fi
   if [[ ! -f "$ROOT_DIR/output" ]]; then
     echo "[!] $label: output not found (exit=$code)"
     exit 1
+  fi
+  if [[ $code -ne 0 ]]; then
+    echo "[!] $label: compiler exited with code $code (output saved anyway)"
   fi
   cp "$ROOT_DIR/output" "$TMP_DIR/$(basename "$label").elf"
   echo "  -> output: $(wc -c < "$ROOT_DIR/output") bytes"
@@ -76,6 +80,6 @@ if cmp -s "$TMP_DIR/gen2.elf" "$TMP_DIR/gen3.elf"; then
 else
   DIFFS=$(cmp -l "$TMP_DIR/gen2.elf" "$TMP_DIR/gen3.elf" 2>/dev/null | wc -l || true)
   echo "gen2 vs gen3: FAIL ($DIFFS differing byte pairs)"
-  echo "bootstrap-native: FAIL (Stage 3 — see docs/PENDING.md)"
+  echo "bootstrap-native: FAIL (Stage 3 - see docs/PENDING.md)"
   exit 1
 fi

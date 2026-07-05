@@ -13,6 +13,7 @@ const src = fs.readFileSync(path.join(root, 'projects/yoyo.ty'), 'utf8');
 const outA = path.join(root, `build/compare-a.${ext}`);
 const outB = path.join(root, `build/compare-b.${ext}`);
 
+fs.mkdirSync(path.join(root, 'build'), { recursive: true });
 const a = resolveBackend('x64').compile(src, { target });
 fs.writeFileSync(outA, a);
 

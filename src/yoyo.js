@@ -139,6 +139,7 @@ if(require.main===module){(async()=>{
   const ky=fs.readFileSync(rest[0],'utf8');
   const exe=compile(ky,{target,backend});
   const out=rest[1]||rest[0].replace(/\.(ty|ky)$/,'')+(target==='linux'?'':'.exe');
+  fs.mkdirSync(require('path').dirname(out),{recursive:true});
   fs.writeFileSync(out,exe);
   fs.chmodSync(out,0o755);
   console.log(`Compiled [${target}/${backend}] to ${out} (${exe.length} bytes)`);

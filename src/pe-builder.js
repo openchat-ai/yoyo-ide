@@ -46,7 +46,7 @@ class PE{
     pe[0]=0x4D;pe[1]=0x5A;pe.writeUInt32LE(0xF0,0x3C);
     pe[0xF0]=0x50;pe[0xF1]=0x45;pe[0xF2]=0;pe[0xF3]=0;
     pe.writeUInt16LE(0x8664,0xF4);pe.writeUInt16LE(2,0xF6);
-    pe.writeUInt16LE(0xF0,0x104);pe.writeUInt16LE(0x22,0x106);
+    pe.writeUInt16LE(0xF0,0x104);pe.writeUInt16LE(0x23,0x106);
     const oh=0x108;
     pe.writeUInt16LE(0x20B,oh);pe.writeUInt8(14,oh+2);
     pe.writeUInt32LE(cs,oh+4);pe.writeUInt32LE(ds,oh+8);
@@ -73,7 +73,7 @@ class PE{
     '.rdata\0\0'.split('').forEach((c,i)=>pe[sh2+i]=c.charCodeAt(0));
     pe.writeUInt32LE(rdataVS,sh2+8);pe.writeUInt32LE(dR,sh2+12);
     pe.writeUInt32LE(rdataRS,sh2+16);pe.writeUInt32LE(rdataRO,sh2+20);
-    pe.writeUInt32LE(0xE0000040,sh2+36);
+    pe.writeUInt32LE(0xC0000040,sh2+36);
     if(this.code)this.code.copy(pe,0x400);
     iat.copy(pe,rdataRO);hnBuf.copy(pe,rdataRO+iatSz);dllStrBuf.slice(0,dllOff).copy(pe,rdataRO+iatSz+hnBuf.length);
     iidBuf.copy(pe,rdataRO+iatSz+hnBuf.length+dllOff);

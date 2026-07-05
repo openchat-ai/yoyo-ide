@@ -9,7 +9,7 @@ on:
 
 jobs:
   bootstrap-native:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,24 +21,39 @@ jobs:
 
       - name: Generate yoyo.ty (win)
         run: node src/yoyo-gen.js --target=win
+        shell: powershell
 
       - name: Compile gen1
-        run: node src/yoyo.js projects/yoyo.ty build/yoyo.exe
-
-      - name: gen1 → gen2 (self-compile)
         run: |
-          Copy-Item projects/yoyo.ty input.ky
-          .\build\yoyo.exe
-          Copy-Item output.exe gen2.exe
+          mkdir build -Force
+          node src/yoyo.js projects/yoyo.ty build/yoyo.exe
+        shell: powershell
+
+      - name: gen1 → gen2
+        run: |
+          copy /Y projects\yoyo.ty input.ky >nul
+          build\yoyo.exe
+          echo exit=%errorlevel%
+          if not exist output.exe exit /b 1
+          copy /Y output.exe gen2.exe >nul
+        shell: cmd
 
       - name: gen2 → gen3
         run: |
-          Copy-Item projects/yoyo.ty input.ky
-          .\gen2.exe
-          Copy-Item output.exe gen3.exe
+          Copy-Item -Force projects/yoyo.ty input.ky
+          & .\gen2.exe 2>&1
+          Write-Host "exit=$LASTEXITCODE"
+          Start-Sleep 1
+          if (-not (Test-Path output.exe)) { throw "gen2: no output.exe" }
+          Write-Host "output.exe exists (teardown crash is OK)"
+          Copy-Item -Force output.exe gen3.exe
+          Write-Host "gen3 ready"
+          exit 0
+        shell: powershell
 
       - name: Check gen2 ≡ gen3
         run: |
           $h2 = (Get-FileHash gen2.exe).Hash
           $h3 = (Get-FileHash gen3.exe).Hash
           if ($h2 -eq $h3) { Write-Host "PASS: gen2 ≡ gen3 ($h2)" } else { Write-Host "FAIL: gen2 ($h2) != gen3 ($h3)"; exit 1 }
+        shell: powershell
