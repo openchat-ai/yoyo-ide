@@ -35,7 +35,11 @@ jobs:
 
       - name: Native Linux bootstrap (debug)
         run: |
-          PRESERVE=${{ github.event.inputs.preserve }} bash scripts/bootstrap-native.sh ${{ github.event.inputs.stages }} || true
+          PRESERVE=${{ github.event.inputs.preserve }} BOOTSTRAP_DEBUG=1 PRESERVE_AFTER_TIMEOUT=1 \
+            bash scripts/bootstrap-native.sh ${{ github.event.inputs.stages }} || true
+          echo "=== End of bootstrap script ==="
+          ls -la /tmp/yoyo-native-bs-*/ 2>&1 || echo "no yoyo-native-bs-* dir"
+          ls -la build/ 2>&1
         timeout-minutes: 15
 
       - name: Compute byte-level diff between gen1.elf and gen2.elf

@@ -38,26 +38,47 @@ run_gen() {
   cp projects/yoyo.ty "$ROOT_DIR/input.ky"
   echo "[*] $label: $compiler"
   set +e
-  timeout --foreground 120s "$compiler"
+  if [[ "${BOOTSTRAP_DEBUG:-0}" == "1" ]] && [[ "$label" == "gen3" ]]; then
+    echo "[debug] capturing strace for $label"
+    if [[ ! -x /usr/bin/strace ]]; then
+      echo "warn: /usr/bin/strace not present"
+      timeout --foreground 120s "$compiler"
+    else
+      timeout --foreground 120s strace -f -o "$TMP_DIR/${label}.strace" "$compiler"
+    fi
+  else
+    timeout --foreground 120s "$compiler"
+  fi
   local code=$?
   set -e
   if [[ $code -eq 124 ]]; then
     echo "[!] $label timeout"
-    exit 1
-  fi
-  if [[ $code -eq 124 ]]; then
-    echo "[!] $label timeout"
-    exit 1
+    echo "[debug] dumping /proc-like info (output.ky status)"
+    ls -la "$ROOT_DIR/input.ky" "$ROOT_DIR/output" "$ROOT_DIR/output.exe" 2>&1 || true
+    if [[ -f "$TMP_DIR/${label}.strace" ]]; then
+      echo "[debug] last 50 strace events:"
+      tail -n 50 "$TMP_DIR/${label}.strace"
+      echo "[debug] syscall frequency (top 20):"
+      awk '{print $1}' "$TMP_DIR/${label}.strace" | grep -v "^$" | sort | uniq -c | sort -rn | head -20 || true
+    fi
+    # Don't exit on timeout — caller may want to inspect artifacts
+    if [[ "${PRESERVE_AFTER_TIMEOUT:-0}" != "1" ]]; then
+      exit 1
+    fi
   fi
   if [[ ! -f "$ROOT_DIR/output" ]]; then
     echo "[!] $label: output not found (exit=$code)"
-    exit 1
+    if [[ "${PRESERVE_AFTER_TIMEOUT:-0}" != "1" ]]; then
+      exit 1
+    fi
   fi
   if [[ $code -ne 0 ]]; then
     echo "[!] $label: compiler exited with code $code (output saved anyway)"
   fi
-  cp "$ROOT_DIR/output" "$TMP_DIR/$(basename "$label").elf"
-  echo "  -> output: $(wc -c < "$ROOT_DIR/output") bytes"
+  if [[ -f "$ROOT_DIR/output" ]]; then
+    cp "$ROOT_DIR/output" "$TMP_DIR/$(basename "$label").elf"
+    echo "  -> output: $(wc -c < "$ROOT_DIR/output") bytes"
+  fi
 }
 
 run_gen "gen1" "$ROOT_DIR/build/yoyo"
