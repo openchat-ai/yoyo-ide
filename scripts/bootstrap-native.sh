@@ -72,6 +72,8 @@ if [[ "$STAGES" -lt 3 ]]; then
 fi
 
 chmod +x "$TMP_DIR/gen2.elf"
+cp "$TMP_DIR/gen2.elf" "$ROOT_DIR/build/gen2.elf"
+echo "  saved gen2.elf to build/gen2.elf ($(wc -c < "$ROOT_DIR/build/gen2.elf") bytes)"
 run_gen "gen3" "$TMP_DIR/gen2.elf"
 
 if cmp -s "$TMP_DIR/gen2.elf" "$TMP_DIR/gen3.elf"; then
