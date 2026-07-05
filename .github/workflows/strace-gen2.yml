@@ -20,37 +20,71 @@ jobs:
           PRESERVE=1 bash scripts/bootstrap-native.sh 2
           ls -la /tmp/yoyo-native-bs-*/
           TD=$(ls -dt /tmp/yoyo-native-bs-*/ | head -1)
-          GEN2="$TD/gen2.elf"
-          cp "$GEN2" build/gen2.elf
-          ls -la build/gen2.elf
+          cp "$TD/gen1.elf" build/gen1.elf
+          cp "$TD/gen2.elf" build/gen2.elf
+          ls -la build/gen1.elf build/gen2.elf
         timeout-minutes: 2
+
+      - name: Strace gen1.elf reading yoyo.ty
+        run: |
+          chmod +x build/gen1.elf
+          cp projects/yoyo.ty input.ky
+          set +e
+          timeout --foreground --kill-after=10s 30s strace -f -o build/gen1.strace ./build/gen1.elf
+          code=$?
+          set -e
+          echo "gen1.elf exited with $code"
+          if [[ -f output ]]; then
+            echo "gen1.elf produced output:"
+            ls -la output
+            cp output build/gen1-output.bin
+          fi
+        timeout-minutes: 3
 
       - name: Strace gen2.elf reading yoyo.ty
         run: |
           chmod +x build/gen2.elf
-          ls -la build/gen2.elf
+          rm -f output
           cp projects/yoyo.ty input.ky
           set +e
-          timeout --foreground --kill-after=10s 45s strace -f -o build/gen2.strace ./build/gen2.elf
+          timeout --foreground --kill-after=10s 30s strace -f -o build/gen2.strace ./build/gen2.elf
           code=$?
           set -e
           echo "gen2.elf exited with $code"
           if [[ -f output ]]; then
-            echo "gen2.elf DID produce output:"
+            echo "gen2.elf produced output:"
             ls -la output
             cp output build/gen2-output.bin
-          else
-            echo "gen2.elf did NOT produce output"
           fi
-          if [[ -f build/gen2.strace ]]; then
-            echo "=== Last 50 strace events ==="
-            tail -n 50 build/gen2.strace
-            echo "=== syscall frequency (top 20) ==="
-            awk '{print $1}' build/gen2.strace | grep -v "^$" | sort | uniq -c | sort -rn | head -20
-            echo "=== strace line count ==="
-            wc -l build/gen2.strace
-          fi
-        timeout-minutes: 5
+        timeout-minutes: 3
+
+      - name: Compare last 30 strace lines of gen1 vs gen2
+        if: always()
+        run: |
+          echo "===== gen1.elf strace tail (last 30) ====="
+          if [[ -f build/gen1.strace ]]; then tail -n 30 build/gen1.strace; else echo "no gen1.strace"; fi
+          echo "===== gen2.elf strace tail (last 30) ====="
+          if [[ -f build/gen2.strace ]]; then tail -n 30 build/gen2.strace; else echo "no gen2.strace"; fi
+          echo "===== gen1.elf strace first call to open('input.ky'): ====="
+          if [[ -f build/gen1.strace ]]; then grep -n -A 4 'open.*input.ky' build/gen1.strace | head -30; fi
+          echo "===== gen2.elf strace first call to open('input.ky'): ====="
+          if [[ -f build/gen2.strace ]]; then grep -n -A 4 'open.*input.ky' build/gen2.strace | head -30; fi
+        timeout-minutes: 1
+
+      - name: Upload artifacts (gen1.elf, gen2.elf, straces, outputs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-gen2-strace-${{ github.run_id }}
+          if-no-files-found: ignore
+          path: |
+            build/gen1.elf
+            build/gen2.elf
+            build/gen1.strace
+            build/gen2.strace
+            build/gen1-output.bin
+            build/gen2-output.bin
+          retention-days: 7
 
       - name: Upload artifacts (gen2.elf, strace, gen2-output)
         if: always()
