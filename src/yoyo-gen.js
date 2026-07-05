@@ -31,6 +31,7 @@ const IAT_BASE   = 0x9000;   // IAT base (= CODE_RVA + TEXT_VS = 0x1000 + 0x8000
 const PE_IMPORT_PREFIX = 0x400; // .rdata bytes before embedded user data (IAT + import dir)
 const DATA_USER_RVA = IAT_BASE + PE_IMPORT_PREFIX; // runtime data_base for state_08 / blob copy
 const PE_DATA_FILE_OFF = 0x8400 + PE_IMPORT_PREFIX; // file offset of user data in output PE buffer
+const ELF_DATA_FILE_OFF = 0x9000; // SA + align(TEXT_VS=0x8000) = data file offset for ELF
 const IAT_DISP_BASE = IAT_BASE - 0x1004; // disp32 base for IAT call: state_0E has already +2 for FF 15, plus 4 bytes of disp32 ahead
 
 // IAT entries for each API function
@@ -288,7 +289,7 @@ L('84 4C ' + hx(STARTUP_BLOB_OFF, 4) + ' ' + hx(outputStartup.length, 2));
 L(SET(0x0E, outputStartup.length));
 
 const HANDLER_MAP_OFF = 0xFE00;
-const OUTPUT_DATA_FILE_OFF = PE_DATA_FILE_OFF;
+const OUTPUT_DATA_FILE_OFF = isLinux ? ELF_DATA_FILE_OFF : PE_DATA_FILE_OFF;
 
 if (useNativeOverlay) {
   C('Copy Node-compiled handler image to output .text (win-emit-core overlay)');
@@ -352,7 +353,7 @@ if (useNativeOverlay) {
 if (isLinux) {
   C('Copy exit syscall blob into output ELF data section');
   L(GET(0x47, 0x02));
-  L(ADD(0x47, PE_DATA_FILE_OFF + EXIT_BLOB_OFF));
+  L(ADD(0x47, OUTPUT_DATA_FILE_OFF + EXIT_BLOB_OFF));
   L(GET(0x48, 0x03));
   L(ADD(0x48, EXIT_BLOB_OFF));
   L(SET(0x53, exitBlobLen));
