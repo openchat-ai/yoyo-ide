@@ -82,7 +82,7 @@
 ; Copy exit syscall blob into output ELF data section
 60 47 02
 61 47 15d00
-60 48 03
+60 48 08
 61 48 cd00
 30 53 0b
 85 47 48 53

@@ -354,7 +354,7 @@ if (isLinux) {
   C('Copy exit syscall blob into output ELF data section');
   L(GET(0x47, 0x02));
   L(ADD(0x47, OUTPUT_DATA_FILE_OFF + EXIT_BLOB_OFF));
-  L(GET(0x48, 0x03));
+  L(GET(0x48, 0x08));
   L(ADD(0x48, EXIT_BLOB_OFF));
   L(SET(0x53, exitBlobLen));
   L('85 47 48 53');
