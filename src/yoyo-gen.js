@@ -79,9 +79,10 @@ const startupBlob = buildStartup();
 const LINUX_CODE_RVA = BASE + 0x1000;
 const linuxOutputStartup = buildLinuxOutputStartup(LINUX_CODE_RVA + TEXT_VS);
 
-const STARTUP_JMP_DISP_OFF = (isLinux ? linuxOutputStartup.length : startupBlob.length) - 4;
-// Both startup blobs now end with jmp_rel (buildStartup / buildLinuxOutputStartup),
-// so the rel32 offset is (blob_length - 4) for either platform.
+// Reserved state slot: holds the startup blob length, captured immediately after
+// the first MEMCPY and read by H_FC and H_64. Enables runtime-computed fixup
+// offsets instead of baking platform-dependent constants into the TIR.
+const RES_STARTUP_LEN = 0x01;
 
 const maxStartupLen = Math.max(startupBlob.length, linuxOutputStartup.length);
 const TPL_BLOB_DATA = 0x4000;
@@ -291,6 +292,7 @@ C('Copy startup code to output .text');
 L(GET(0x4C, 0x03));
 L('84 4C ' + hx(STARTUP_BLOB_OFF, 4) + ' ' + hx(outputStartup.length, 2));
 L(SET(0x0E, outputStartup.length));
+L(GET(0x01, 0x0E) + ' ; state_01 = startup length (saved for H_FC / H_64 fixups)');
 
 const HANDLER_MAP_OFF = 0xFE00;
 const OUTPUT_DATA_FILE_OFF = isLinux ? ELF_DATA_FILE_OFF : PE_DATA_FILE_OFF;
@@ -402,13 +404,14 @@ if (useNativeOverlay) {
   L('55 48 47');
 }
 
-C('Patch startup jmp rel32 at .text+' + hx(STARTUP_JMP_DISP_OFF, 2) + ' -> handler_table[0]');
+C('Patch startup jmp rel32 to handler_table[0] (rel32 = handler[0] - startup_end)');
 L(SET(0x50, 0));
 L(CH(0xE7) + '  ; state_4D = handler_table[0]');
-L(SET(0x4A, outputStartup.length));
+L(GET(0x4A, 0x01) + ' ; state_4A = saved startup length');
 L(SUBV(0x4D, 0x4A) + '  ; rel32 = handler[0] - startup_end');
 L(GET(0x4C, 0x03));
-L(ADD(0x4C, STARTUP_JMP_DISP_OFF));
+L(ADDV(0x4C, 0x01) + ' ; state_4C = write_base + startupLen');
+L(SUB(0x4C, 4) + '  ; state_4C -= 4 (rel32 is last 4 bytes of E9 jmp)');
 L('55 4C 4D');
 
 if (!isLinux && useNativeOverlay) {
@@ -2042,8 +2045,8 @@ L(GET(0x49, 0x06));
 L(ADDV(0x49, 0x48) + '  ; state_49 = pos_base + i*4');
 L(GET(0x48, 0x49) + '  ; state_48 = &fixup_pos[i]');
 emitLoadU32LE(0x4A, 0x48);
-C('Skip fixups in startup blob (already final); state_0A = startup length');
-L(SET(0x0A, outputStartup.length));
+C('Skip fixups in startup blob (already final); state_0A = saved startup length');
+L(GET(0x0A, 0x01) + ' ; state_0A = state_01 (saved startup length)');
 L(CMP(0x4A, 0x0A));
 L(JB(0xFD) + '  ; patch_pos < startup_len -> skip');
 C('rel32 = target - (patch_pos + 4)');

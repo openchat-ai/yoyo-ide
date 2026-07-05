@@ -55,6 +55,7 @@
 60 4c 03
 84 4C cc00 21
 30 0e 21
+60 01 0e ; state_01 = startup length (saved for H_FC / H_64 fixups)
 ; Run scanner -> emitter
 50 0A 00
 60 0c 0a
@@ -105,13 +106,14 @@
 61 48 19200
 60 47 0e
 55 48 47
-; Patch startup jmp rel32 at .text+1d -> handler_table[0]
+; Patch startup jmp rel32 to handler_table[0] (rel32 = handler[0] - startup_end)
 30 50 00
 41 e7  ; state_4D = handler_table[0]
-30 4a 21
+60 4a 01 ; state_4A = saved startup length
 69 4d 4a  ; rel32 = handler[0] - startup_end
 60 4c 03
-61 4c 1d
+68 4c 01 ; state_4C = write_base + startupLen
+62 4c 04  ; state_4C -= 4 (rel32 is last 4 bytes of E9 jmp)
 55 4C 4D
 ; Write output ELF
 30 0e 26000
@@ -2495,8 +2497,8 @@ FF
 68 42 42
 68 42 42
 68 4a 42
-; Skip fixups in startup blob (already final); state_0A = startup length
-30 0a 21
+; Skip fixups in startup blob (already final); state_0A = saved startup length
+60 0a 01 ; state_0A = state_01 (saved startup length)
 65 4a 0a
 77 fd  ; patch_pos < startup_len -> skip
 ; rel32 = target - (patch_pos + 4)
