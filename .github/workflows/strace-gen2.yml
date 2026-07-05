@@ -1,0 +1,66 @@
+name: Linux Strace gen2.elf
+
+on:
+  workflow_dispatch:
+
+jobs:
+  strace-gen2:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build gen1.elf
+        run: |
+          bash scripts/bootstrap-native.sh 2 || true
+        timeout-minutes: 2
+
+      - name: Stage3 build (gen3.elf if not hangs)
+        run: |
+          # Find freshest tmp dir
+          TD=$(ls -dt /tmp/yoyo-native-bs-*/ | head -1)
+          GEN1="$TD/gen1.elf"
+          GEN2="$TD/gen2.elf"
+          cp "$GEN2" build/gen2.elf
+          ls -la build/gen2.elf
+          # Run gen2.elf reading yoyo.ty with strace, ~60s budget
+          echo "=== Strace gen2.elf reading yoyo.ty ==="
+          cp projects/yoyo.ty input.ky
+          set +e
+          timeout --foreground 60s strace -f -o build/gen2.strace build/gen2.elf
+          code=$?
+          set -e
+          echo "gen2.elf exited with $code"
+          if [[ -f output ]]; then
+            echo "gen2.elf DID produce output:"
+            ls -la output
+            mv output build/gen2-output.bin
+          else
+            echo "gen2.elf did NOT produce output"
+          fi
+          if [[ -f build/gen2.strace ]]; then
+            echo "=== Last 30 strace events ==="
+            tail -n 30 build/gen2.strace
+            echo "=== syscall frequency (top 20) ==="
+            awk '{print $1}' build/gen2.strace | grep -v "^$" | sort | uniq -c | sort -rn | head -20
+            echo "=== bracktrace: count events by syscall ==="
+            wc -l build/gen2.strace
+          fi
+        timeout-minutes: 3
+
+      - name: Upload artifacts (gen2.elf, strace, gen2-output)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-gen2-strace-${{ github.run_id }}
+          if-no-files-found: ignore
+          path: |
+            build/gen2.elf
+            build/gen2.strace
+            build/gen2-output.bin
+          retention-days: 7
