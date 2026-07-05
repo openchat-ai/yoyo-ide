@@ -1,0 +1,31 @@
+name: Linux Bootstrap
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  bootstrap-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Native Linux bootstrap (gen2 ≡ gen3)
+        run: bash scripts/bootstrap-native.sh 3
+
+      - name: Upload gen artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-bootstrap-elfs
+          if-no-files-found: ignore
+          path: /tmp/yoyo-native-bs-*/
