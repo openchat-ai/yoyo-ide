@@ -81,7 +81,7 @@ function genLinuxAllocHandler() {
 
 function genLinuxLoadFileHandler() {
   const lines = [];
-  lines.push('; H_61: Linux LoadFile emit');
+  lines.push('; H_61: Linux LoadFile emit (anonymous mmap + read; matches linux-runtime.emitLoadFile)');
   lines.push(H(0x61));
   lines.push(SET(0x41, 0));
   lines.push('65 51 41');
@@ -92,42 +92,76 @@ function genLinuxLoadFileHandler() {
   lines.push(...emitJmpOverString('input.ky'));
   lines.push(H(0xD6));
 
+  // open(filename, O_RDONLY) -> fd (R13)
   const open = new E.Buf();
   E.mov_ri(open, RSI, BigInt(O_RDONLY));
   E.mov_ri(open, RAX, BigInt(LINUX_SYSCALL.open));
   syscall(open);
   lines.push(...emitBuf(open.b.slice(0, open.tell())));
-  lines.push(...emitBuf([0x49, 0x89, 0xc5]));
+  lines.push(...emitBuf([0x49, 0x89, 0xc5]));  // mov r13, rax
 
-  const lseek = new E.Buf();
-  E.mov_rr(lseek, RDI, R13);
-  E.mov_ri(lseek, RSI, 0n);
-  E.mov_ri(lseek, RDX, 2n);
-  E.mov_ri(lseek, RAX, 8n);
-  syscall(lseek);
-  lines.push(...emitBuf(lseek.b.slice(0, lseek.tell())));
-  lines.push(...emitBuf([0x49, 0x89, 0xc4]));
+  // lseek(fd, 0, SEEK_END) -> file_size (R12)
+  const lseekEnd = new E.Buf();
+  E.mov_rr(lseekEnd, RDI, R13);
+  E.mov_ri(lseekEnd, RSI, 0n);
+  E.mov_ri(lseekEnd, RDX, 2n);  // SEEK_END = 2
+  E.mov_ri(lseekEnd, RAX, 8n);  // SYS_lseek = 8
+  syscall(lseekEnd);
+  lines.push(...emitBuf(lseekEnd.b.slice(0, lseekEnd.tell())));
+  lines.push(...emitBuf([0x49, 0x89, 0xc4]));  // mov r12, rax
 
+  // lseek(fd, 0, SEEK_SET) -> rewind to start (so read() reads from beginning)
+  const lseekStart = new E.Buf();
+  E.mov_rr(lseekStart, RDI, R13);
+  E.mov_ri(lseekStart, RSI, 0n);
+  E.mov_ri(lseekStart, RDX, 0n);
+  E.mov_ri(lseekStart, RAX, 8n);
+  syscall(lseekStart);
+  lines.push(...emitBuf(lseekStart.b.slice(0, lseekStart.tell())));
+
+  // mmap(NULL, file_size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) -> buffer
+  // PROT = 3 (no PROT_EXEC!), FLAGS = MAP_PRIVATE | MAP_ANONYMOUS = 0x22
+  // This avoids the EACCES that PROT_READ|PROT_WRITE|PROT_EXEC+MAP_SHARED produces.
   const map = new E.Buf();
   E.mov_ri(map, RDI, 0n);
-  E.mov_rr(map, RSI, R12);
-  E.mov_ri(map, RDX, 7n);
-  E.mov_ri(map, R10, 1n);
-  E.mov_rr(map, R8, R13);
+  E.mov_rr(map, RSI, R12);                 // length = file_size
+  E.mov_ri(map, RDX, 3n);                  // prot = RW only
+  E.mov_ri(map, R10, 0x22n);               // flags = PRIVATE | ANONYMOUS
+  E.mov_ri(map, R8, -1n);                  // fd = -1 (anonymous)
   E.xor_rr(map, R9, R9);
   E.mov_ri(map, RAX, BigInt(LINUX_SYSCALL.mmap));
   syscall(map);
   lines.push(...emitBuf(map.b.slice(0, map.tell())));
 
+  // state[stateId] = buffer (RAX)
   lines.push(GET(0x46, 0x50));
-  lines.push(CH(0xE3));
-  lines.push(ADD(0x50, 1));
-  lines.push(GET(0x46, 0x50));
-  lines.push(...emitBuf([0x4d, 0x89, 0xa7]));
-  lines.push(CH(0xE1));
-  lines.push(CH(0xE4));
-  lines.push(SUB(0x50, 1));
+  lines.push(CH(0xE3));  // stPut(state_50, RAX)
 
+  // read(fd, buffer, file_size)
+  // Need: rdi=fd, rsi=buffer, rdx=file_size
+  // RAX has buffer; rdi would be overwritten, so move:
+  lines.push(...emitBuf([0x48, 0x89, 0xc6])); // mov rsi, rax
+  const readCall = new E.Buf();
+  E.mov_rr(readCall, RDI, R13);            // rdi = fd (R13)
+  E.mov_rr(readCall, RDX, R12);            // rdx = file_size (R12)
+  E.mov_ri(readCall, RAX, BigInt(LINUX_SYSCALL.read));
+  syscall(readCall);
+  lines.push(...emitBuf(readCall.b.slice(0, readCall.tell())));
+
+  // state[stateId+1] = file_size (R12)
+  // Need: store R12 at [R15 + (stateId+1)*8]
+  // Encoding: REX=4D 89 A7 disp32 (mov [r15+disp32], r12)
+  //   REX = 0x40 | W(1) | R(1 for r12) | B(1 for r15) = 0x4D
+  //   89 = MOV r/m64, reg64
+  //   A7 = ModRM: mod=2, reg=4(R12), rm=7(R15)
+  lines.push(ADD(0x50, 1));                // stateId+1
+  lines.push(...emitBuf([0x4d, 0x89, 0xa7]));   // REX + 89 + ModRM
+  lines.push(GET(0x46, 0x50));             // state_46 = state_50 = (stateId+1)
+  lines.push(CH(0xE1));                   // compute disp = state_46*8
+  lines.push(CH(0xE4));                   // emit disp32
+  lines.push(SUB(0x50, 1));                // restore stateId
+
+  // close(fd)
   const close = new E.Buf();
   E.mov_rr(close, RDI, R13);
   E.mov_ri(close, RAX, BigInt(LINUX_SYSCALL.close));
