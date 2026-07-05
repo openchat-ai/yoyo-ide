@@ -47,10 +47,32 @@ jobs:
           rm -f output
           cp projects/yoyo.ty input.ky
           set +e
-          timeout --foreground --kill-after=10s 240s strace -f -o build/gen2.strace ./build/gen2.elf
+          # Run gen2.elf under strace. In parallel, poll /proc/PID/syscall every 2s
+          # to see what gen2.elf is doing when "hanging" (no syscalls).
+          ( strace -f -o build/gen2.strace ./build/gen2.elf ) &
+          GEN2_PID=$!
+          echo "gen2.elf PID: $GEN2_PID"
+          for i in $(seq 1 30); do
+            sleep 8
+            # find the actual ELF pid (strace forks)
+            for pid in $(ls /proc/ 2>/dev/null | grep -E '^[0-9]+$' | head -20); do
+              if [[ -e "/proc/$pid/exe" ]] && readlink "/proc/$pid/exe" 2>/dev/null | grep -q gen2; then
+                state=$(cat /proc/$pid/wchan 2>/dev/null)
+                syscall=$(cat /proc/$pid/syscall 2>/dev/null | head -c 80)
+                echo "[$i] PID=$pid wchan=$state syscall=$syscall"
+              fi
+            done
+            # If gen2.elf process no longer exists, break
+            if ! kill -0 $GEN2_PID 2>/dev/null && ! ls /proc/*/exe 2>/dev/null | xargs -I {} readlink {} 2>/dev/null | grep -q gen2; then
+              echo "[$i] gen2.elf finished"
+              break
+            fi
+          done
+          # Kill strace gen2 wrapper if still running
+          wait $GEN2_PID 2>/dev/null
           code=$?
           set -e
-          echo "gen2.elf exited with $code (124=timeout, 137=sigkill, 0=success)"
+          echo "gen2.elf strace wrapper exit: $code"
           if [[ -f output ]]; then
             echo "gen2.elf produced output:"
             ls -la output
@@ -58,7 +80,7 @@ jobs:
           else
             echo "gen2.elf did NOT produce output"
           fi
-        timeout-minutes: 6
+        timeout-minutes: 5
 
       - name: Compare last 30 strace lines of gen1 vs gen2
         if: always()
