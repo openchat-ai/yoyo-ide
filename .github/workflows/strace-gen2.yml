@@ -65,14 +65,18 @@ jobs:
                 ts=$(date +%s.%N)
                 state=$(cat /proc/$pid/wchan 2>/dev/null)
                 syscall=$(cat /proc/$pid/syscall 2>/dev/null | tr '\0' ' ')
-                rip=$(cat /proc/$pid/stat 2>/dev/null | awk '{print "field39="$39}')
+                # /proc/$pid/syscall format: <running?> <syscall_nr> <arg0> <arg1> ... (when not in kernel)
+                # or "running" when in user space
+                rip="n/a"
                 stuck_count=0
-                # Track if rip has changed since last sample
-                last=$(grep "$pid" "$PROBE_FILE" 2>/dev/null | tail -1)
-                if [[ -n "$last" ]] && [[ "$last" == *"$rip"* ]]; then
-                  stuck_count=1
+                last=$(grep " PID=$pid " "$PROBE_FILE" 2>/dev/null | tail -1)
+                if [[ -n "$last" ]]; then
+                  last_syscall=$(echo "$last" | sed -n 's/.*syscall=\([^ ]*\).*/\1/p')
+                  if [[ "$last_syscall" == "$syscall" && "$syscall" != "running" && "$syscall" != "" ]]; then
+                    stuck_count=1
+                  fi
                 fi
-                echo "$ts PID=$pid comm=$comm wchan=$state syscall=$syscall rip=$rip stuck=$stuck_count" >> "$PROBE_FILE"
+                echo "$ts PID=$pid comm=$comm wchan=$state syscall=$syscall stuck=$stuck_count" >> "$PROBE_FILE"
                 found=1
               fi
             done
