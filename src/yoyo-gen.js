@@ -56,7 +56,9 @@ function buildStartup() {
   E.mov_ri(b, 8, 0x3000n);      // mov r8,  MEM_COMMIT|MEM_RESERVE
   E.mov_ri(b, 9, 0x40n);        // mov r9,  PAGE_EXECUTE_READWRITE
   const vaOff = b.tell();
-  E.call_rip(b, IAT.VirtualAlloc - (CODE_RVA + vaOff + 6));
+  E.sub_ri(b, 4, 0x28);         // sub rsp, 0x28 (shadow space for VirtualAlloc)
+  E.call_rip(b, IAT.VirtualAlloc - (CODE_RVA + vaOff + 4 + 6));
+  E.add_ri(b, 4, 0x28);         // add rsp, 0x28
   E.mov_rr(b, 15, 0);           // mov r15, rax  (state array base)
   // Compute data section base and store in state_08
   const leaOff = b.tell();      // offset of the LEA instruction
@@ -64,7 +66,9 @@ function buildStartup() {
   E.mov_mr64(b, 15, 8 * 8, 0); // mov [r15 + 64], rax = state_08 = data_base
   E.mov_ri(b, 1, -11n);         // mov rcx, STD_OUTPUT_HANDLE
   const gsOff = b.tell();
-  E.call_rip(b, IAT.GetStdHandle - (CODE_RVA + gsOff + 6));
+  E.sub_ri(b, 4, 0x28);         // sub rsp, 0x28 (shadow space for GetStdHandle)
+  E.call_rip(b, IAT.GetStdHandle - (CODE_RVA + gsOff + 4 + 6));
+  E.add_ri(b, 4, 0x28);         // add rsp, 0x28
   E.mov_rr(b, 14, 0);           // mov r14, rax  (stdout handle)
   E.jmp_rel(b, 0);              // jmp to H_00 (disp patched after handler map snapshot)
   return b.b.slice(0, b.tell());

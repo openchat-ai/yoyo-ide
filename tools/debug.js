@@ -590,6 +590,8 @@ class MiniDisassembler {
 const STATE_NAMES = {};
 {
   const names = {
+    0x00: 'scratch_00',
+    0x01: 'scratch_01',
     0x02: 'output_buf',
     0x03: 'write_base',
     0x04: 'handler_offsets',
@@ -609,17 +611,51 @@ const STATE_NAMES = {};
     0x12: 'scanner_digit_cnt',
     0x13: 'scanner_opcode',
     0x14: 'scanner_arg_idx',
+    0x15: 'defined_handlers',
     0x40: 'scratch_40',
     0x41: 'scratch_41',
+    0x42: 'scratch_42',
+    0x43: 'scratch_43',
+    0x44: 'scratch_44',
     0x45: 'byte_to_emit',
     0x46: 'state_id',
+    0x47: 'loop_var_i',
+    0x48: 'addr_ptr',
+    0x49: 'b1_disp',
+    0x4A: 'arg_lo',
+    0x4B: 'b3_disp',
+    0x4C: 'addr_base',
     0x4D: 'u32_val',
     0x4E: 'rel32_end',
+    0x4F: 'b0_disp',
     0x50: 'arg0',
     0x51: 'arg1',
     0x52: 'arg2',
+    0x53: 'scratch_53',
+    0xF0: 'jcc_cond',
+    0xF7: 'defined[hh]',
+    0xF8: 'scratch_F8',
+    0xF9: 'load_u32',
   };
   for (const [k, v] of Object.entries(names)) STATE_NAMES[parseInt(k)] = v;
+}
+
+// Read handler offset table from PE .data+0xFE00 (handler_map)
+// Returns Map<h_int, file_offset_in_text>
+function readHandlerMap(pePath) {
+  const buf = fs.readFileSync(pePath);
+  // .data RVA + 0xFE00 = handler_map start
+  // .data starts at PE_DATA_FILE_OFF (0x8400 + 0x400 = 0x8800 in file)
+  // handler_map_off = DATA_FILE_OFF + HANDLER_MAP_OFF = 0x8800 + 0xFE00 = 0x18600
+  const MAP_OFF = 0x18600;
+  if (buf.length < MAP_OFF + 0x404) return null;
+  const table = new Map();
+  for (let i = 0; i < 256; i++) {
+    const off = buf.readUInt32LE(MAP_OFF + i * 4);
+    if (off > 0 && off < 0x8000) table.set(i, off);
+  }
+  const codeEnd = buf.readUInt32LE(MAP_OFF + 0x400);
+  return { table, codeEnd };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -942,6 +978,71 @@ class Debugger {
     }
   }
 
+  // Diff helper: compare running gen2 .text vs Node compileFromAnalyzed
+  // Loads handlers/slices via extractWinHandlerSlices; finds the handler containing
+  // the given RVA and prints a side-by-side byte diff.
+  diffAgainstNode(handlerHH, ripRva, windowBefore = 64, windowAfter = 192) {
+    if (!fs.existsSync('projects/yoyo.ty')) {
+      console.log('  [diff-node] no projects/yoyo.ty');
+      return;
+    }
+    let parse, analyze, extractWinHandlerSlices;
+    try {
+      ({ parse, analyze } = require('../src/yoyo.js'));
+      ({ extractWinHandlerSlices } = require('../src/backends/win-emit-core.js'));
+    } catch (e) {
+      console.log('  [diff-node] require failed:', e.message);
+      return;
+    }
+    const src = fs.readFileSync('projects/yoyo.ty', 'utf8');
+    const prog = analyze(parse(src));
+    const handlers = Object.keys(prog.handlers).map(k => +k).sort((a,b) => a - b);
+    let layout;
+    try {
+      layout = extractWinHandlerSlices(prog, { handlerOrder: 'file', handlerOrderList: handlers });
+    } catch (e) {
+      console.log('  [diff-node] extract failed:', e.message);
+      return;
+    }
+    if (handlerHH === undefined) {
+      let best = -1, bestHH = -1;
+      if (this.handlerTable) {
+        for (const [hh, off] of this.handlerTable.entries) {
+          const entryRva = 0x1000 + off;
+          if (entryRva <= ripRva && entryRva > best) { best = entryRva; bestHH = hh; }
+        }
+      }
+      if (bestHH < 0) { console.log('  [diff-node] no handler map; pass handlerHH explicitly'); return; }
+      handlerHH = bestHH;
+    }
+    const slice = layout.slices.get(handlerHH);
+    if (!slice) { console.log('  [diff-node] H_' + handlerHH.toString(16) + ' not in Node slice output'); return; }
+    if (!this.handlerTable) { console.log('  [diff-node] no handler_map'); return; }
+    const expectedTextOff = this.handlerTable.entries.get(handlerHH);
+    if (expectedTextOff === undefined) { console.log('  [diff-node] H_' + handlerHH.toString(16) + ' not in handler_map'); return; }
+    const cd = this.codeData;
+    const nodeBuf = slice;
+    const gen2Off = expectedTextOff;
+    const ripOff = ripRva - 0x1000;
+    const start = Math.max(0, ripOff - windowBefore);
+    const end = Math.min(nodeBuf.length, ripOff + windowAfter);
+    console.log('');
+    console.log('  -- diff(Node H_' + handlerHH.toString(16).padStart(2,'0') + ' vs gen2 @ .text+0x' + expectedTextOff.toString(16) + ') --');
+    console.log('  RIP at .text-offset 0x' + ripOff.toString(16) + ', window .text+0x' + start.toString(16) + '..+0x' + end.toString(16));
+    console.log('  offset  | Node | gen2');
+    let diffs = 0;
+    for (let i = start; i < end; i++) {
+      const nb = nodeBuf[i];
+      const gb = cd[gen2Off + i];
+      const mark = nb !== gb ? '*' : ' ';
+      if (nb !== gb) diffs++;
+      const pointer = (gen2Off + i === ripOff) ? ' <-- RIP' : '';
+      console.log('    +0x' + i.toString(16).padStart(4,'0') + ' : ' + nb.toString(16).padStart(2,'0') + '    ' + gb.toString(16).padStart(2,'0') + '    ' + mark + pointer);
+    }
+    console.log('  byte diffs in window: ' + diffs + ' / ' + (end - start));
+    console.log('  Node slice size: ' + nodeBuf.length + 'B, gen2 handler size: ' + (cd.length - gen2Off) + 'B remaining');
+  }
+
   // ── Save diagnostics to timestamped file ──
 
   saveDiag(totalWait, regs, ripRVA) {
@@ -989,6 +1090,352 @@ class Debugger {
     }
     fs.writeFileSync(diagPath, lines.join('\n'));
     console.error(`[*] Diagnostics saved: ${diagPath}`);
+  }
+
+  // ── New instrumentation modes (added 2026-07-05) ──
+  // Snapshot: which handlers have we entered, how many times?
+  // Stores per-hit event log so we can print summaries at exit.
+  initInstrumentation(opts) {
+    // opts = { traceHandlers, watchSlots, filter, auditRel32, maxHits,
+    //          crashHexRva, crashHexBefore, crashHexAfter, memcpyAnalysis,
+    //          diffNodeAtCrash, diffNodeHH }
+    this.instOpts = opts;
+    this.eventLog = [];     // array of { type, hit, rva, extra }
+    this.handlerCounts = new Map();  // int hh -> int count
+    this.handlerFirstSeen = new Map(); // int hh -> hit number (first time)
+    this.lastState = null;          // for diff display
+    this.lastCodeOff = null;        // for delta tracking
+    this._emitByteTotal = 0;        // running count of state_0e advances (observed)
+    this._stopRequested = false;
+    this._hitsSeen = 0;
+  }
+
+  // Compute rel32 from given RVA back to caller position from bytes at patchOff
+  // patchOffRVA = absolute RVA where 4-byte rel32 starts (i.e. addr_of_e8 + 1)
+  resolveRel32(patchRva) {
+    const textSec = this.pe.sections.find(s => s.name === '.text');
+    if (!textSec) return null;
+    const fileOff = this.pe.rvaToFile(patchRva);
+    if (fileOff === null || fileOff + 4 > this.pe.data.length) return null;
+    const rel = this.pe.data.readInt32LE(fileOff);
+    // next_ip = patchRva + 4
+    // target = next_ip + rel = patchRva + 4 + rel
+    return { rel, target: patchRva + 4 + rel };
+  }
+
+  // Dump emit trace for a specific handler entry
+  // Compares:
+  //   - state_0e (expected .text byte position)
+  //   - state_45 (last byte that was emit)
+  //   - handler_map[hh] (recorded handler offset)
+  //   - actual bytes at handler_map[hh] (from .text)
+  dumpEmitTrace(hh, regs) {
+    const r15 = regs.R15;
+    if (!r15 || r15 === 0n) {
+      console.log(`  [trace-emit] H_${hh.toString(16).padStart(2, '0')}: R15 is null`);
+      return;
+    }
+    const state0e = this.readState(r15, 0x0e);
+    const state45 = this.readState(r15, 0x45);
+    const state4d = this.readState(r15, 0x4d);
+    const state07 = this.readState(r15, 0x07);
+    const line = `  [emit H_${hh.toString(16).padStart(2, '0')}] state_0e=0x${(state0e||0n).toString(16).padStart(4,'0')} state_45=0x${Number(state45||0n).toString(16).padStart(2,'0')} state_4d=0x${(state4d||0n).toString(16).slice(-12)} state_07=${state07||0n}`;
+    console.log(line);
+    if (this.eventLog.length < 200) this.eventLog.push({ type: 'emit', hh, line });
+    // Read handler_table[hh] if .data section loaded
+    if (this.handlerTable) {
+      const tableRVA = this.handlerTable.rva;
+      const fileOff = this.pe.rvaToFile(tableRVA + hh * 4);
+      if (fileOff !== null && fileOff + 8 <= this.pe.data.length) {
+        const expected_off = this.pe.data.readUInt32LE(fileOff);
+        const actual_rip_in_text = this.rva(regs.Rip) - 0x1000;
+        const delta = actual_rip_in_text - expected_off;
+        console.log(`    handler_map[0x${hh.toString(16)}]=0x${expected_off.toString(16)} (got 0x${actual_rip_in_text.toString(16)}, Δ=${delta})`);
+        if (delta !== 0 && this.eventLog.length < 200) {
+          this.eventLog.push({ type: 'mismatch', hh, expected: expected_off, actual: actual_rip_in_text, delta });
+        }
+      }
+    }
+  }
+
+  // Audit rel32 at the immediate next byte after RIP for E8/E9/0F 8x sites
+  // If RIP is on the call/jmp instruction, the rel32 starts 1 byte later (E8/E9) or 2 later (0F 8x)
+  auditRel32(regs) {
+    if (!this.codeData) return;
+    const textSec = this.pe.sections.find(s => s.name === '.text');
+    if (!textSec) return;
+    const ripRva = this.rva(regs.Rip);
+    const fo = this.pe.rvaToFile(ripRva);
+    if (fo === null || fo + 6 >= this.pe.data.length) return;
+    const b = this.codeData[fo - textSec.rOff];
+    let relOff, insnLen;
+    if (b === 0xe8 || b === 0xe9) { relOff = 1; insnLen = 5; }
+    else if (b === 0x0f && (this.codeData[fo - textSec.rOff + 1] & 0xf0) === 0x80) {
+      relOff = 2; insnLen = 6;
+    } else return; // not a PC-relative branch
+    const rel = this.codeData.readInt32LE(fo - textSec.rOff + relOff);
+    const nextIp = ripRva + insnLen;
+    const target = nextIp + rel;
+    console.log(`  [rel32-audit] @ RVA 0x${ripRva.toString(16)}: ${b===0xe8?'call':b===0xe9?'jmp':'jcc'} target=0x${target.toString(16)} (rel=${rel})`);
+    if (this.eventLog.length < 200) this.eventLog.push({ type: 'rel32', rva: ripRva, target });
+  }
+
+  // Watch specific state slots over time — show on hit
+  watchStateDump(regs, label) {
+    if (!this.instOpts || !this.instOpts.watchSlots) return;
+    if (!regs.R15 || regs.R15 === 0n) return;
+    const parts = [];
+    for (const slot of this.instOpts.watchSlots) {
+      const v = this.readState(regs.R15, slot);
+      const name = STATE_NAMES[slot] || '';
+      const hex = (v === null ? 'null' : '0x' + v.toString(16).padStart(16, '0'));
+      const lastHex = this.lastState && this.lastState[slot] !== undefined ? this.lastState[slot] : null;
+      const delta = (v !== null && lastHex !== null && hex !== lastHex) ? ' ←' : '';
+      parts.push(`st[0x${slot.toString(16).padStart(2,'0')}]=${hex}${delta}`);
+    }
+    if (parts.length) {
+      console.log(`  [watch ${label || ''}] ${parts.join('  ')}`);
+    }
+    if (regs.R15) {
+      this.lastState = {};
+      for (const slot of this.instOpts.watchSlots) {
+        const v = this.readState(regs.R15, slot);
+        this.lastState[slot] = v === null ? null : '0x' + v.toString(16).padStart(16, '0');
+      }
+    }
+  }
+
+  // ── Bulk rel32 audit (no checkpoint needed): scan entire .text ──
+  // For every E8/E9/0F 8x site in .text, decode the rel32 and classify:
+  //   - "OK   : inside .text; lands on a handler_map entry" (matches a known handler)
+  //   - "OK-:  intra-handler forward branch (within one handler)"
+  //   - "BACK : backward branch (intra-handler loop, usually fine)"
+  //   - "BAD  : outside .text or hits NN (uninitialized)"
+  // This catches off-by-N rel32 bugs deterministically without running.
+  fullRel32Audit() {
+    if (!this.codeData || !this.pe || !this.handlerTable) {
+      console.log('  [full-rel32-audit] requires .text + PE + handler_map');
+      return;
+    }
+    const cd = this.codeData;
+    let totalE8=0, totalE9=0, totalCC=0, bad=0, ok=0;
+    const handlerMap = new Map();
+    for (const [hh, off] of this.handlerTable.entries) handlerMap.set(off, hh);
+    for (let off = 0; off < cd.length - 5; off++) {
+      const b = cd[off];
+      if (b === 0xe8) {
+        totalE8++;
+        const rel = cd.readInt32LE(off + 1);
+        const target = off + 5 + rel;  // .text-relative
+        if (target < 0 || target >= cd.length) {
+          console.log(`  [BAD  ] E8 at .text+0x${off.toString(16)}: target=.text+0x${target.toString(16)} OUT OF BOUNDS`);
+          bad++; continue;
+        }
+        // Check whether target bytes look like a real handler or part of one
+        const hh = handlerMap.get(target);
+        const hhClose = hh !== undefined ? hh : handlerMap.get(this.findNearestHandler(target));
+        ok++;
+      } else if (b === 0xe9) {
+        totalE9++;
+        const rel = cd.readInt32LE(off + 1);
+        const target = off + 5 + rel;
+        if (target < 0 || target >= cd.length) { bad++; console.log(`  [BAD  ] E9 at .text+0x${off.toString(16)}: target OUT OF BOUNDS`); }
+      } else if (b === 0x0f && cd[off + 1] >= 0x80 && cd[off + 1] <= 0x8f && off + 6 <= cd.length) {
+        const rel = cd.readInt32LE(off + 2);
+        const target = off + 6 + rel;
+        if (target < 0 || target >= cd.length) { bad++; console.log(`  [BAD  ] 0F 8x at .text+0x${off.toString(16)}: target OUT OF BOUNDS`); }
+        else ok++;
+        totalCC++;
+      }
+    }
+    console.log(`  [full-rel32-audit] E8=${totalE8}, E9=${totalE9}, 0F8x=${totalCC}; out-of-bounds=${bad}`);
+  }
+
+  // Boot-time scan: every LEA rax, [rip+disp32] in .text, classified.
+  dumpLeaTargets() {
+    if (!this.codeData || !this.pe) { console.log('  [dump-lea] no .text / PE'); return; }
+    const cd = this.codeData;
+    const textSec = this.pe.sections.find(s => s.name === '.text');
+    if (!textSec) return;
+    const textRvaBase = textSec.vRVA;
+    let l_total = 0, l_outside = 0, l_in_text = 0, l_in_iat = 0, l_in_data = 0;
+    const out = [];
+    for (let i = 0; i < cd.length - 7; i++) {
+      const b0 = cd[i];
+      if (b0 !== 0x48 || cd[i+1] !== 0x8d) continue;
+      if (cd[i+2] !== 0x05) continue;
+      l_total++;
+      const disp = cd.readInt32LE(i+3);
+      const ipRva = textRvaBase + i + 7;
+      const targetRva = ipRva + disp;
+      let cls = 'unknown';
+      if (this.pe.iatBaseRVA && targetRva >= this.pe.iatBaseRVA && targetRva < this.pe.iatBaseRVA + 0x100) { cls = 'IAT'; l_in_iat++; }
+      else {
+        const dataSec = this.pe.sections.find(s => s.name === '.data' || s.name === '.rdata');
+        if (dataSec && targetRva >= dataSec.vRVA && targetRva < dataSec.vRVA + dataSec.vSize) { cls = dataSec.name; l_in_data++; }
+        else if (targetRva < textRvaBase || targetRva >= textRvaBase + textSec.vSize) { cls = 'OUTSIDE .text'; l_outside++; }
+        else { cls = 'inside .text'; l_in_text++; }
+      }
+      const iat = this.pe.resolveIAT ? this.pe.resolveIAT(targetRva) : null;
+      const symName = (iat && iat.name) ? ('sym=' + iat.name) : '';
+      const fileOff = this.pe.rvaToFile(targetRva);
+      let ascii = '';
+      if (fileOff !== null && fileOff + 16 <= this.pe.data.length) {
+        ascii = Array.from(this.pe.data.slice(fileOff, fileOff + 16)).map(b => (b >= 32 && b < 127) ? String.fromCharCode(b) : '.').join('');
+      }
+      out.push({ rva: textRvaBase + i, disp, ipRva, targetRva, cls, symName, ascii });
+    }
+    console.log('');
+    console.log('  -- dumpLeaTargets: ' + l_total + ' LEA rax, [rip+disp32] instructions --');
+    for (const o of out) {
+      console.log('  RVA 0x' + o.rva.toString(16).padStart(4,'0') + ': lea rax, [rip+0x' + o.disp.toString(16) + '] -> RVA 0x' + o.targetRva.toString(16).padStart(8,'0') + ' (' + o.cls + ')' + (o.symName ? ' ' + o.symName : '') + (o.ascii && o.ascii.replace(/\./g,'') ? ' "' + o.ascii + '"' : ''));
+    }
+    console.log('  summary: in IAT=' + l_in_iat + ' in .data/.rdata=' + l_in_data + ' inside .text=' + l_in_text + ' OUTSIDE .text=' + l_outside);
+    if (l_outside > 0) console.log('  ** WARNING: ' + l_outside + ' LEAs target outside .text — likely wrong base **');
+  }
+
+  // Find nearest handler_map entry ≤ off
+  findNearestHandler(off) {
+    let best = -1;
+    for (const [hh, hOff] of this.handlerTable.entries) {
+      if (hOff <= off && hOff > best) best = hOff;
+    }
+    return best;
+  }
+
+  // After diff against Node, dump summary: which forward-fixup E8 rel32s in gen2
+  // point to wrong address (delta != 0). Auto-detected after --diff-node.
+  // Quick scan: walk current .text, decode every FF 15 (call [rip+disp32])
+  // and verify the resolved IAT target is within the IAT region.
+  scanRel32Mismatches(_ignoredRva) {
+    if (!this.handlerTable || !this.codeData) return;
+    const cd = this.codeData;
+    const codeEnd = this.handlerTable.codeEnd;
+    if (!this.pe) { console.log('  [scanRel32] no PE'); return; }
+    const textSec = this.pe.sections.find(s => s.name === '.text');
+    if (!textSec) return;
+    const iatRvaBase = this.pe.iatBaseRVA || 0;
+    let inspected = 0, e8Mismatched = 0, e8OutOfRange = 0, e8Forward = 0;
+    let ff15Count = 0, ff15OutOfRange = 0, ff15Suspicious = 0;
+    const offByRange = new Map();
+    const sampleLines = [];
+    if (this.pe && this.pe.iatByIndex) {
+      for (const e of this.pe.iatByIndex) {}
+    }
+    for (let i = 0; i < cd.length - 6; i++) {
+      const b = cd[i];
+      if (b === 0xff && cd[i + 1] === 0x15) {
+        const disp = cd.readInt32LE(i + 2);
+        const ipRva = textSec.vRVA + i + 6;
+        const targetRva = ipRva + disp;
+        inspected++;
+        ff15Count++;
+        const targetFileOff = this.pe.rvaToFile(targetRva);
+        if (targetFileOff === null || targetFileOff >= this.pe.data.length) {
+          ff15OutOfRange++;
+          if (sampleLines.length < 12) sampleLines.push(`  RVA 0x${(textSec.vRVA + i).toString(16)}: call[rip+${disp.toString(16)}] -> RVA 0x${targetRva.toString(16)} OUT OF RANGE`);
+        } else {
+          const iat = this.pe.resolveIAT(targetRva);
+          if (iat && iat.name && iat.name.startsWith('iat_slot_')) {
+            ff15Suspicious++;
+            if (sampleLines.length < 12) sampleLines.push(`  RVA 0x${(textSec.vRVA + i).toString(16)}: call[rip+${disp.toString(16)}] -> RVA 0x${targetRva.toString(16)} (resolved: ${iat.name})`);
+          }
+        }
+        continue;
+      }
+      if (b === 0xe8) {
+        const rel = cd.readInt32LE(i + 1);
+        const target = i + 5 + rel;
+        inspected++;
+        e8Forward++;
+        if (target < 0 || target > codeEnd) {
+          e8OutOfRange++;
+          continue;
+        }
+        const hOff = this.handlerTable.entries.get(target);
+        if (hOff === undefined) continue;
+        const expectedRel = hOff - (i + 5);
+        const delta = rel - expectedRel;
+        if (delta !== 0) {
+          e8Mismatched++;
+          const cnt = offByRange.get(delta) || 0;
+          offByRange.set(delta, cnt + 1);
+          if (sampleLines.length < 12) {
+            sampleLines.push(`  RVA 0x${(textSec.vRVA + i).toString(16)}: call → RVA 0x${(textSec.vRVA + target).toString(16)} (handler), rel=0x${rel.toString(16)} expected=0x${expectedRel.toString(16)} Δ=${delta}`);
+          }
+        }
+      }
+    }
+    console.log('');
+    console.log('  -- scanRel32Mismatches --');
+    console.log('  E8 (handler-call) inspected: ' + e8Forward);
+    console.log('  FF 15 (IAT-call) inspected: ' + ff15Count);
+    console.log('  E8 with wrong rel32 (handler target): ' + e8Mismatched);
+    console.log('  E8 out-of-range / external: ' + e8OutOfRange);
+    console.log('  FF 15 out-of-range: ' + ff15OutOfRange);
+    console.log('  FF 15 resolved to unknown iat_slot (gen2 IAT shifted): ' + ff15Suspicious);
+    if (offByRange.size > 0) {
+      console.log('  E8 delta distribution:');
+      const sortedDelta = [...offByRange.entries()].sort((a,b) => a[0] - b[0]);
+      for (const [d, c] of sortedDelta) {
+        console.log('    Δ=' + (d >= 0 ? '+' : '') + d.toString(16) + ' (' + d + '): ' + c + ' occurrences');
+      }
+    }
+    if (sampleLines.length > 0) {
+      console.log('  first 12 sample sites (E8 + IAT mismatches):');
+      for (const s of sampleLines) console.log(s);
+    }
+  }
+
+  // Hex-dump bytes around a given RVA (default = RIP at hit time).
+  // Argument rva is an RVA, e.g. 0x121c (which lives at .text offset 0x21c,
+  // since CODE_RVA=0x1000). Pass isRva=true (default) for RVA-relative input.
+  hexDumpRange(rva, bytesBefore, bytesAfter, isRva = true) {
+    if (!this.codeData) { console.log('  [hex-dump] no .text'); return; }
+    // If rva is in RVA space (>=0x1000), convert to .text offset
+    const textOff = isRva ? (rva - 0x1000) : rva;
+    const start = Math.max(0, textOff - bytesBefore);
+    const end = Math.min(this.codeData.length, textOff + bytesAfter);
+    const len = end - start;
+    const lines = [];
+    for (let i = start; i < end; i += 16) {
+      const hex = Array.from(this.codeData.slice(i, Math.min(i + 16, end)))
+        .map(b => b.toString(16).padStart(2, '0')).join(' ');
+      const ascii = Array.from(this.codeData.slice(i, Math.min(i + 16, end)))
+        .map(b => (b >= 32 && b < 127) ? String.fromCharCode(b) : '.').join('');
+      const lineAddr = isRva ? (0x1000 + i) : i;
+      lines.push(`  RVA 0x${lineAddr.toString(16).padStart(4, '0')}: ${hex.padEnd(48 * 2 - 1)}  ${ascii}`);
+    }
+    const startRva = isRva ? (0x1000 + start) : start;
+    const endRva = isRva ? (0x1000 + end) : end;
+    console.log(`  ── Hex dump RVA 0x${startRva.toString(16)}..0x${endRva.toString(16)} (${len}B) ──`);
+    for (const l of lines) console.log(l);
+    console.log('');
+  }
+
+  // Analyse rep movsb params: compare RSI/RDI/RCX with state_08, state_03+state_0e, state_4d-ish
+  // Triggered when RIP is at F3 A4
+  memcpyParamsAnalysis(regs) {
+    if (!regs || !regs.R15 || regs.R15 === 0n) return;
+    // Read state
+    const state08 = this.readState(regs.R15, 0x08);  // data_base
+    const state03 = this.readState(regs.R15, 0x03);  // write_base = output_buf + 0x400
+    const state0e = this.readState(regs.R15, 0x0e);  // code_offset
+    const state4d = this.readState(regs.R15, 0x4d);  // rel32 / u32_val
+    const rdi = Number(regs.Rdi);
+    const rsi = Number(regs.Rsi);
+    const rcx = Number(regs.Rcx);
+    let msg = '  ── memcpy analysis (F3 A4) ──';
+    msg += `\n    RCX (count)        = 0x${rcx.toString(16)} = ${rcx} bytes`;
+    msg += `\n    RSI (src)          = 0x${rsi.toString(16)}`;
+    if (state08) msg += `\n    state_08 + 0x4000 = 0x${(Number(state08) + 0x4000).toString(16)}  (delta=${rsi - (Number(state08) + 0x4000)})`;
+    msg += `\n    RDI (dst)          = 0x${rdi.toString(16)}`;
+    if (state03) msg += `\n    state_03           = 0x${state03.toString(16)} (write_base)`;
+    if (state0e) msg += `\n    state_0e           = 0x${state0e.toString(16)} (code_offset) → expected .text+0x${state0e.toString(16)}`;
+    msg += `\n    state_4d           = 0x${state4d ? state4d.toString(16) : 'null'} (last u32)`;
+    // Check if RSI / RDI look like page-aligned output_buf + offset
+    if (rsi && (rsi & 0xfff) !== 0) msg += `\n    ⚠ RSI is NOT page-aligned (low-12-bit ${rsi & 0xfff} ≠ 0)`;
+    console.log(msg);
   }
 
   // ── Analyze crash context ──
@@ -1253,6 +1700,34 @@ class Debugger {
     let lastCo = -1;
 
     while (true) {
+      if (this._stopRequested) {
+        console.log(`\n  [*] Stop requested after ${this.hitCount} hits.`);
+        const finalSnap = this._getSnapshot();
+        if (finalSnap.regs) {
+          console.log('  ── Final state ──');
+          this.dumpRegs(finalSnap.regs);
+          this.dumpStates(finalSnap.regs.R15);
+        }
+        if (this.handlerCounts && this.handlerCounts.size > 0) {
+          console.log('  ── Handler-entry counts ──');
+          for (const [hh, n] of this.handlerCounts.entries()) {
+            console.log(`    H_${hh.toString(16).padStart(2,'0')}: ${n} entries`);
+          }
+        }
+        if (this.eventLog && this.eventLog.length > 0) {
+          console.log('  ── First 50 instrumentation events ──');
+          for (const ev of this.eventLog.slice(0, 50)) {
+            if (ev.type === 'emit') console.log(ev.line);
+            else if (ev.type === 'mismatch') {
+              console.log(`    [MISMATCH] H_${ev.hh.toString(16)}: handler_map=0x${ev.expected.toString(16)} got 0x${ev.actual.toString(16)} Δ=${ev.delta}`);
+            } else if (ev.type === 'rel32') {
+              console.log(`    [rel32] @ RVA 0x${ev.rva.toString(16)} -> 0x${ev.target.toString(16)}`);
+            }
+          }
+        }
+        this.shutdown(0);
+        break;
+      }
       const got = WaitForDebugEvent(koffi.address(eventBuf), 1000);
       if (!got) {
         silentSec++;
@@ -1339,6 +1814,54 @@ class Debugger {
           this.dumpDisasmAt(regs.Rip, 3);
           this.dumpStates(regs.R15);
 
+          // ── Instrumentation hooks ──
+          if (this.instOpts) {
+            this._hitsSeen++;
+            // --trace-emit: if hitRva corresponds to a handler in traceHandlers
+            if (this.instOpts.traceHandlers && this.handlerTable) {
+              const tableRVA = this.handlerTable.rva;
+              const tableFileOff = this.pe.rvaToFile(tableRVA);
+              if (tableFileOff !== null) {
+                for (const hh of this.instOpts.traceHandlers) {
+                  const expected = this.pe.data.readUInt32LE(tableFileOff + hh * 4);
+                  // handler entry RVA = 0x1000 + handler_offset
+                  if (expected > 0 && hitRva === expected + 0x1000) {
+                    this.handlerCounts.set(hh, (this.handlerCounts.get(hh) || 0) + 1);
+                    if (!this.handlerFirstSeen.has(hh)) this.handlerFirstSeen.set(hh, this.hitCount);
+                    this.dumpEmitTrace(hh, regs);
+                    break;
+                  }
+                }
+              }
+            }
+            // --audit-rel32: if RIP is at a call/jmp/jcc, decode and log target
+            if (this.instOpts.auditRel32) {
+              this.auditRel32(regs);
+            }
+            // --watch-state: highlight specific state slots
+            if (this.instOpts.watchSlots) {
+              this.watchStateDump(regs, `hit#${this.hitCount}@rva0x${hitRva.toString(16)}`);
+            }
+            // --filter: log only if matches
+            if (this.instOpts.filter) {
+              const pass = this.instOpts.filter(regs, hitRva);
+              if (!pass) console.log('  [filter] predicate not met — silenced');
+            }
+            // --count=N: stop after N hits
+            if (this.instOpts.maxHits && this._hitsSeen >= this.instOpts.maxHits) {
+              console.log(`\n  [*] Reached max-hits=${this.instOpts.maxHits}, terminating.`);
+              this._stopRequested = true;
+              const addr2 = Number(this.imageBase + BigInt(hitRva));
+              const rbuf2 = Buffer.from([origBytes[hitRva]]);
+              const bw2 = [0];
+              WriteProcessMemory(this.processHandle, addr2, koffi.address(rbuf2), 1, bw2);
+              ctx.buf.writeBigUInt64LE(BigInt(hitRva) + this.imageBase, CTX.Rip);
+              SetThreadContext(this.mainThreadHandle, ctx.ptr);
+              ContinueDebugEvent(pid, tid, DBG_CONTINUE);
+              break;
+            }
+          }
+
           // Restore INT3
           const addr = Number(this.imageBase + BigInt(hitRva));
           const rbuf = Buffer.from([origBytes[hitRva]]);
@@ -1364,6 +1887,30 @@ class Debugger {
           this.dumpDisasmAt(regs.Rip, 8);
           this.dumpStates(regs.R15);
           this.analyzeCrash(regs, exAddr);
+
+          // Optional crash-hex-dump and memcpy-analysis
+          const ripRva = Number(this.rva(regs.Rip));
+          if (this.instOpts) {
+            if (this.instOpts.crashHexRva !== undefined) {
+              const offRva = this.instOpts.crashHexRva;
+              this.hexDumpRange(offRva, this.instOpts.crashHexBefore, this.instOpts.crashHexAfter);
+            } else {
+              // Default: show .text around RIP with bigger window than dumpDisasmAt (8 insns)
+              this.hexDumpRange(ripRva, 64, 192);
+            }
+            if (this.instOpts.memcpyAnalysis) this.memcpyParamsAnalysis(regs);
+            if (this.instOpts.diffNodeAtCrash) {
+              console.log('  [diff-node] starting');
+              try {
+                this.diffAgainstNode(this.instOpts.diffNodeHH, ripRva);
+                console.log('  [diff-node] diff dumped');
+                if (this.instOpts.diffNodeHH === undefined && this.handlerTable) {
+                  this.scanRel32Mismatches(ripRva);
+                  console.log('  [diff-node] scanRel32 done');
+                }
+              } catch (e) { console.log('  [diff-node] THREW: ' + e.message + '\\n' + e.stack); }
+            }
+          }
 
           // EXCEPTION_RECORD layout:
           //   +0x00: ExceptionCode (4)
@@ -1443,8 +1990,8 @@ function main() {
   if (args.includes('--trace-api')) mode = 'trace-api';
   else if (args.includes('--checkpoints')) mode = 'checkpoints';
   else if (args.includes('--step')) mode = 'step';
+  else if (args.includes('--trace-emit')) mode = 'checkpoints';
 
-  // Parse wait time (default 10s — fast recovery)
   let maxWaitSec = 10;
   const waitArg = args.find(a => a.startsWith('--wait='));
   if (waitArg) {
@@ -1452,82 +1999,269 @@ function main() {
     if (!isNaN(n) && n > 0) maxWaitSec = n;
   }
 
-  // Extract optional input file
-  const inputFile = args.find(a => !a.startsWith('--') && (a.endsWith('.ky') || a.includes('\\') || a.includes('/') || a === args[args.length-1]));
+  // --exe=<path>
+  let exePath = path.join(__dirname, '..', 'build', 'yoyo.exe');
+  const exeArg = args.find(a => a.startsWith('--exe='));
+  if (exeArg) {
+    const v = exeArg.slice('--exe='.length);
+    if (v) exePath = path.isAbsolute(v) ? v : path.resolve(process.cwd(), v);
+  }
+
+  const inputFile = args.find(a => !a.startsWith('--') && (a.endsWith('.ky') || a.includes('\\') || a.includes('/')));
 
   if (args.includes('--help') || args.includes('-h')) {
     console.log(`Usage: node debug.js [mode] [options] [input.ky]
-
 Modes:
-  (default)    Crash analysis — trap access violations, dump full analysis
+  (default)    Crash analysis - trap access violations, dump full analysis
   --trace-api  Place INT3 at every ff-15 (call IAT) site, show API calls
   --checkpoints <rva1,rva2,...>  Place INT3 checkpoints at given RVAs
   --step       Single-stepping mode (after first BP)
+  --trace-emit <hH1,hH2,...>   Trace handler entries - when one of these handlers is hit,
+                               print state_0e / state_45 / state_4d vs handler_map recorded.
+                               Combines with --checkpoints for stop points.
 Options:
-  --wait=N     Max seconds to wait for process (default: 10)
-  --help, -h   This help
-
+  --exe=<path>    Target binary (default: build/yoyo.exe; e.g. --exe=build/gen2.exe)
+  --wait=N        Max seconds to wait (default: 10)
+  --watch-state slot=N[,M,...]  On every checkpoint hit, show these slots + delta vs last
+  --audit-rel32   On every hit, if RIP is at E8/E9/0F 8x, decode and print rel32 target
+  --filter='state[N]=V[,state[M]opW]'  Only log when predicate matches. Ops: = != < <= > >=
+  --count=N       Stop after N checkpoint hits and dump summary
+  --handler-range=hH[,hM,...]  Auto-inject RVA checkpoints at each named handler entry
+                                  (needs handler_map; combines with --checkpoints)
+  --crash-hex-rva=<rva>          On crash (or --count stop), hex-dump 256B around <rva>
+        [--crash-hex-before=N]    (default: 64; auto = .text around RIP)
+        [--crash-hex-after=N]     (default: 192)
+  --memcpy-analysis              On crash, if RIP is at F3 A4 (rep movsb), dump RSI/RDI/RCX
+                                  alongside state_03/state_0e/state_08/state_4d for
+                                  diagnosis of memcpy pointers
+  --dump-lea                    Boot-time scan: dump every LEA rax, [rip+disp32] in .text with
+                                  computed target RVA + data-section/IAT classification. Useful to
+                                  verify data_base-relative computations (state_08 in yoyo.ty).
+  --diff-node [H_hh]             On crash, side-by-side diff current .text bytes with
+                                  Node compileFromAnalyzed reference output. Auto-detects
+                                  the handler from handler_map unless H_hh is given.
+  --help, -h      This help
 The debugger automatically:
   1. Parses PE to map sections and IAT
-  2. Resolves API call targets (which function is being called via IAT)
+  2. Resolves API call targets
   3. Disassembles around RIP
   4. Walks the call stack
-  5. Analyzes register state for common bugs (null ptrs, bad handles)
-  6. Names state slots via mini-kyc convention
-  7. Shows non-zero state slots with ASCII content preview
+  5. Analyzes register state for common bugs
+  6. Names state slots via yoyo.ty convention
+  7. Reads handler_map from PE .data+0xFE00 (used by --trace-emit)
   8. Detects hangs every 2s; kills if RIP stalled >6s or code_offset >8s
-  9. Saves diagnostic dump to debug-out/diag-*.txt before termination`);
+  9. Saves diagnostic dump to debug-out/diag-*.txt before termination
+Examples:
+  node tools/debug.js --exe=build/gen2.exe \\
+      --checkpoints 0x2ba3,0x34ac,0x3e11 \\
+      --trace-emit e0,e6,43,1e --watch-state slot=e,45,4d --count=20`);
     return;
   }
 
   if (mode === 'analyze') {
-    console.log('[!] Post-mortem analysis not yet implemented — use crash mode');
+    console.log('[!] Post-mortem analysis not yet implemented - use crash mode');
     return;
   }
 
-  const exePath = path.join(__dirname, '..', 'build', 'yoyo.exe');
   if (!fs.existsSync(exePath)) {
-    console.error('[!] yoyo.exe not found');
+    console.error(`[!] target not found: ${exePath}`);
     process.exit(1);
   }
 
   const dbg = new Debugger(exePath);
   dbg.pe = new PEParser(exePath);
 
-  // Read .text section for disassembly
   const textSec = dbg.pe.sections.find(s => s.name === '.text');
   if (textSec) dbg.codeData = dbg.pe.data.slice(textSec.rOff, textSec.rOff + textSec.rSize);
 
+  const hm = readHandlerMap(exePath);
+  if (hm) {
+    dbg.handlerTable = { rva: 0x18600, entries: hm.table, codeEnd: hm.codeEnd };
+    console.log(`[*] Handler map: ${hm.table.size} valid entries, codeEnd=0x${hm.codeEnd.toString(16)}`);
+    const interesting = [0,1,0xe0,0xe5,0xe6,0xe7,0x63,0x64,0x37,0x43,0x1e,0x30,0x31,0x33,0x44,0x38];
+    for (const hh of interesting) {
+      if (hm.table.has(hh)) console.log(`      H_${hh.toString(16).padStart(2,'0')} @ RVA 0x${(hm.table.get(hh) + 0x1000).toString(16)} (.text+0x${hm.table.get(hh).toString(16)})`);
+    }
+  } else {
+    console.log('[*] No handler_map found (--trace-emit disabled)');
+  }
+
   let checkpoints = [];
 
+  let traceEmitHandlers = null;
+  const traceEmitArg = args.find(a => a.startsWith('--trace-emit='));
+  if (traceEmitArg) {
+    traceEmitHandlers = new Set();
+    const parts = traceEmitArg.slice('--trace-emit='.length).split(',');
+    for (const p of parts) {
+      const m = p.trim().match(/^(?:h)?([0-9a-fA-F]+)$/);
+      if (m) traceEmitHandlers.add(parseInt(m[1], 16));
+    }
+  }
+
+  let watchSlots = null;
+  const wsArg = args.find(a => a.startsWith('--watch-state='));
+  if (wsArg) {
+    const val = wsArg.slice('--watch-state='.length);
+    if (val) {
+      watchSlots = val.split(',').map(s => {
+        const t = s.trim();
+        const m = t.match(/^(?:slot=)?0x?([0-9a-fA-F]+)$/);
+        return m ? parseInt(m[1], 16) : NaN;
+      }).filter(n => !isNaN(n));
+      if (watchSlots.length === 0) watchSlots = null;
+    }
+  }
+
+  let filterFn = null;
+  const filterArg = args.find(a => a.startsWith('--filter='));
+  if (filterArg) {
+    const val = filterArg.slice('--filter='.length);
+    const conds = val.split(',').map(s => s.trim()).filter(Boolean);
+    const parsed = [];
+    const re = /^state\[(\d+|0x[0-9a-fA-F]+)\](=|<=|>=|!=|>|<)(0x[0-9a-fA-F]+|\d+)$/i;
+    for (const c of conds) {
+      const m = c.match(re);
+      if (m) {
+        const slot = parseInt(m[1].startsWith('0x') || m[1].startsWith('0X') ? m[1].slice(2) : m[1], 10);
+        const op = m[2];
+        const v = parseInt(m[3].startsWith('0x') || m[3].startsWith('0X') ? m[3].slice(2) : m[3], m[3].startsWith('0x') ? 16 : 10);
+        parsed.push({ slot, op, val: v });
+      } else {
+        console.error(`[!] Bad --filter clause: "${c}" (expected state[N]opV)`);
+      }
+    }
+    if (parsed.length > 0) {
+      filterFn = (regs) => {
+        if (!regs.R15 || regs.R15 === 0n) return false;
+        for (const p of parsed) {
+          const v = dbg.readState(regs.R15, p.slot);
+          if (v === null) return false;
+          const num = Number(BigInt.asUintN(32, v & 0xFFFFFFFFn));
+          let ok;
+          switch (p.op) {
+            case '=':  ok = (num === p.val) || (Number(v) === p.val); break;
+            case '!=': ok = !(num === p.val); break;
+            case '<':  ok = num <  p.val; break;
+            case '<=': ok = num <= p.val; break;
+            case '>':  ok = num >  p.val; break;
+            case '>=': ok = num >= p.val; break;
+            default:   ok = false;
+          }
+          if (!ok) return false;
+        }
+        return true;
+      };
+      console.log('[*] Filter clauses:');
+      for (const p of parsed) console.log(`      state[0x${p.slot.toString(16)}] ${p.op} ${p.val}`);
+    }
+  }
+
+  let maxHits = null;
+  const countArg = args.find(a => a.startsWith('--count='));
+  if (countArg) {
+    const n = parseInt(countArg.slice('--count='.length), 10);
+    if (!isNaN(n) && n > 0) maxHits = n;
+  }
+
+  const auditRel32 = args.includes('--audit-rel32');
+  const dumpLea = args.includes('--dump-lea');
+
+  // --crash-hex-rva=<rva> [--crash-hex-before=N] [--crash-hex-after=N]
+  let crashHexRva, crashHexBefore = 64, crashHexAfter = 192;
+  const chrArg = args.find(a => a.startsWith('--crash-hex-rva='));
+  if (chrArg) {
+    const v = chrArg.slice('--crash-hex-rva='.length);
+    crashHexRva = parseInt(v.startsWith('0x') ? v.slice(2) : v, 16);
+  }
+  const chbArg = args.find(a => a.startsWith('--crash-hex-before='));
+  if (chbArg) crashHexBefore = parseInt(chbArg.slice('--crash-hex-before='.length), 10);
+  const chaArg = args.find(a => a.startsWith('--crash-hex-after='));
+  if (chaArg) crashHexAfter = parseInt(chaArg.slice('--crash-hex-after='.length), 10);
+
+  const memcpyAnalysis = args.includes('--memcpy-analysis');
+
+  // --handler-range=hH1[,hH2] : automatically inject RVA checkpoints for handler
+  //   hh's start AND each (pe byte + handler offset reach) up to codeEnd
+  let extraCheckpoints = [];
+  const hrArg = args.find(a => a.startsWith('--handler-range='));
+  if (hrArg) {
+    const val = hrArg.slice('--handler-range='.length);
+    if (dbg.handlerTable) {
+      const wanted = new Set(val.split(',').map(s => parseInt(s.trim().startsWith('0x') ? s.trim().slice(2) : s.trim(), 16)));
+      for (const [hh, hOff] of dbg.handlerTable.entries) {
+        if (wanted.has(hh)) extraCheckpoints.push(hOff + 0x1000);  // RVA
+      }
+      console.log(`[*] handler-range added ${extraCheckpoints.length} checkpoints: ${extraCheckpoints.map(r => '0x' + r.toString(16)).join(', ')}`);
+    }
+  }
+
+  
+
+  // --diff-node [H_hh]  -- on crash, dump Node-compiled reference + side-by-side diff
+  let diffNodeAtCrash = false;
+  let diffNodeHH = undefined;
+  const dnArg = args.find(a => a === '--diff-node' || a.startsWith('--diff-node='));
+  if (dnArg) {
+    diffNodeAtCrash = true;
+    if (dnArg.startsWith('--diff-node=')) {
+      const v = dnArg.slice('--diff-node='.length);
+      const m = v.match(/^(?:h)?([0-9a-fA-F]+)$/);
+      if (m) diffNodeHH = parseInt(m[1], 16);
+    }
+  }
+dbg.initInstrumentation({
+    traceHandlers: traceEmitHandlers,
+    watchSlots,
+    filter: filterFn,
+    auditRel32,
+    maxHits,
+    dumpLea,
+    crashHexRva,
+    crashHexBefore,
+    crashHexAfter,
+    memcpyAnalysis,
+    diffNodeAtCrash,
+    diffNodeHH,
+  });
+
   if (mode === 'trace-api') {
-    // Find all ff 15 call sites and set INT3 on each
     dbg.disasm = new MiniDisassembler(dbg.pe);
     const sites = dbg.findCallSites();
     console.log(`[*] Found ${sites.length} API call sites (place INT3 at each):`);
-    for (const s of sites) console.log(`      RVA 0x${s.rva.toString(16)} → ${s.name}`);
+    for (const s of sites) console.log(`      RVA 0x${s.rva.toString(16)} -> ${s.name}`);
     checkpoints = sites.map(s => s.rva);
     checkpoints.sort((a, b) => a - b);
-    // Also add an INT3 at the entry point for startup context
     if (!checkpoints.includes(0x48fa)) checkpoints.push(0x48fa);
   } else if (mode === 'checkpoints') {
-    // Parse checkpoint RVAs from arguments
     const hexArgs = args.filter(a => /^0x[0-9a-f]+$/i.test(a));
     if (hexArgs.length > 0) {
       checkpoints = hexArgs.map(a => parseInt(a, 16));
     } else {
-      // Default pattern
       checkpoints = [0x1000, 0x1044, 0x1080, 0x1100, 0x1200, 0x1300, 0x1400];
     }
+  }
+  // Merge --handler-range checkpoints
+  if (extraCheckpoints.length > 0) {
+    const seen = new Set(checkpoints);
+    for (const r of extraCheckpoints) if (!seen.has(r)) { checkpoints.push(r); seen.add(r); }
+    checkpoints.sort((a, b) => a - b);
   }
 
   if (checkpoints.length > 0) {
     console.log(`[*] INT3 checkpoints: ${checkpoints.map(r => '0x' + r.toString(16)).join(', ')}`);
   } else {
-    console.log('[*] Crash analysis mode — will trap any access violation');
+    console.log('[*] Crash analysis mode - will trap any access violation');
   }
+  if (traceEmitHandlers && traceEmitHandlers.size > 0) {
+    console.log(`[*] Trace handler entries: H_${Array.from(traceEmitHandlers).map(h => h.toString(16).padStart(2,'0')).join(', H_')}`);
+  }
+  if (watchSlots) {
+    console.log(`[*] Watch state slots: ${watchSlots.map(s => '0x' + s.toString(16).padStart(2,'0')).join(', ')}`);
+  }
+  if (maxHits) console.log(`[*] Stop after ${maxHits} hits`);
 
+  if (dumpLea) dbg.dumpLeaTargets();
   dbg.run(mode, checkpoints, inputFile, maxWaitSec);
 }
-
 main();

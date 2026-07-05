@@ -16,7 +16,8 @@ function handlerFileOrder(src) {
   const seen = new Set();
   for (const line of src.split('\n')) {
     const trimmed = line.replace(/;.*$/, '').trim();
-    const m = trimmed.match(/^40\s+([0-9a-fA-F]+)$/);
+    let m = trimmed.match(/^40\s+([0-9a-fA-F]+)$/);
+    if (!m) m = trimmed.match(/^label\s+H_([0-9a-fA-F]+)$/i);
     if (!m) continue;
     const hh = parseInt(m[1], 16);
     if (!seen.has(hh)) {
@@ -75,11 +76,21 @@ function a1ByteLines(buf) {
 /**
  * Patch PC-relative rel32 in e8/e9/0f8x when relocating a slice from oldBase to newBase.
  */
+function isModRMconsumer(b) {
+  // Provable cases where the byte IS an opcode that consumes the next byte as ModRM:
+  //   bits 7-6 = 11 (0xc0-0xff): register-to-register ModRM
+  //   range 0x88-0x8b: MOV opcodes (always consume ModRM)
+  return (b >= 0xc0) || (b >= 0x88 && b <= 0x8b);
+}
 function relocateSlice(buf, oldBase, newBase) {
   const delta = newBase - oldBase;
   const out = Buffer.from(buf);
   for (let i = 0; i < out.length - 4; i++) {
     if (out[i] === 0xe8 || out[i] === 0xe9) {
+      // Skip false positive: e8/e9 as ModRM (preceded by an opcode that consumes ModRM)
+      let prev = i - 1;
+      if (prev >= 0 && out[prev] >= 0x40 && out[prev] <= 0x4f) prev = i - 2;
+      if (prev >= 0 && isModRMconsumer(out[prev])) continue;
       out.writeInt32LE(out.readInt32LE(i + 1) - delta, i + 1);
       i += 4;
     } else if (out[i] === 0x0f && out[i + 1] >= 0x80 && out[i + 1] <= 0x8f && i + 5 < out.length) {
