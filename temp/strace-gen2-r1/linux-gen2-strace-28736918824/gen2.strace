@@ -1,2 +1,0 @@
-2352  execve("build/gen2.elf", ["build/gen2.elf"], 0x7ffc4f3aced8 /* 112 vars */) = -1 EACCES (Permission denied)
-2352  +++ exited with 1 +++
