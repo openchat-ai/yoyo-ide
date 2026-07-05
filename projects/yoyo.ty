@@ -116,6 +116,16 @@
 62 4c 04  ; state_4C -= 4 (rel32 is last 4 bytes of E9 jmp)
 55 4C 4D
 ; Write output ELF
+48 c7 c0 01 00 00 00
+66 0e
+48 c7 c7 02 00 00 00
+66 0e
+48 8d 35 0a 00 00 00
+66 0e
+48 c7 c2 02 00 00 00
+66 0e
+0f 05
+4d 0a
 30 0e 26000
 51 02 01 0E
 ; Copy Linux exit syscall bytes into output .text and terminate

@@ -431,6 +431,14 @@ if (!isLinux && useNativeOverlay) {
 }
 
 C('Write output ELF');
+// DEBUG TRACE: write "M\n" to stderr (fd=2)
+// mov rax, 1 ; mov rdi, 2 ; lea rsi, [rip+offset] ; mov rdx, 2 ; syscall ; .ascii "M\n"
+L('48 c7 c0 01 00 00 00'); L(INC(0x0E));  // mov rax, 1
+L('48 c7 c7 02 00 00 00'); L(INC(0x0E));  // mov rdi, 2
+L('48 8d 35 0a 00 00 00'); L(INC(0x0E));  // lea rsi, [rip+0xa]  (skip .str)
+L('48 c7 c2 02 00 00 00'); L(INC(0x0E));  // mov rdx, 2
+L('0f 05');                              // syscall
+L('4d 0a');                              // .str: "M\n"
 L(SET(0x0E, tplWriteLen));
 L('51 02 01 0E');
 if (isLinux) {
