@@ -47,35 +47,38 @@ jobs:
           rm -f output
           cp projects/yoyo.ty input.ky
           set +e
-          # Run gen2.elf under strace. In parallel, scan ALL /proc for gen2.elf
-          # every 5 seconds and report /proc/PID/syscall + wchan.
+          # Run gen2.elf with strace. Capture strace log; concurrently record
+          # periodic /proc/PID/syscall samples to local file for offline analysis.
+          PROBE_FILE=build/gen2-probe.log
+          : > "$PROBE_FILE"
           ( strace -f -o build/gen2.strace ./build/gen2.elf ) &
           STRACE_PID=$!
           echo "strace wrapper PID: $STRACE_PID"
-          for i in $(seq 1 8); do
-            sleep 5
-            # find ALL processes whose exe path contains gen2.elf
+          for i in $(seq 1 30); do
+            sleep 2
+            # find gen2.elf process
             found=0
             for pid in $(ls /proc/ 2>/dev/null | grep -E '^[0-9]+$'); do
               [[ ! -r "/proc/$pid/comm" ]] && continue
               comm=$(cat /proc/$pid/comm 2>/dev/null)
               if [[ "$comm" == *gen2* ]] || readlink "/proc/$pid/exe" 2>/dev/null | grep -q gen2; then
+                ts=$(date +%s.%N)
                 state=$(cat /proc/$pid/wchan 2>/dev/null)
-                syscall=$(cat /proc/$pid/syscall 2>/dev/null | head -c 80)
-                status=$(cat /proc/$pid/status 2>/dev/null | grep -E '^(State|Name)' | head -2 | tr '\n' ' ')
-                echo "[$i] gen2 match PID=$pid comm=$comm wchan=$state syscall=$syscall"
-                echo "    status: $status"
+                syscall=$(cat /proc/$pid/syscall 2>/dev/null | tr '\0' ' ')
+                rip=$(cat /proc/$pid/stat 2>/dev/null | awk '{print "field39="$39}')
+                stuck_count=0
+                # Track if rip has changed since last sample
+                last=$(grep "$pid" "$PROBE_FILE" 2>/dev/null | tail -1)
+                if [[ -n "$last" ]] && [[ "$last" == *"$rip"* ]]; then
+                  stuck_count=1
+                fi
+                echo "$ts PID=$pid comm=$comm wchan=$state syscall=$syscall rip=$rip stuck=$stuck_count" >> "$PROBE_FILE"
                 found=1
               fi
             done
-            if [[ $found -eq 0 ]]; then
-              echo "[$i] no gen2 process found"
-            fi
-            # Also check overall strace activity
-            if [[ -f build/gen2.strace ]]; then
-              wc=$(wc -l < build/gen2.strace)
-              echo "[$i] gen2.strace lines so far: $wc"
-            fi
+            [[ $found -eq 0 ]] && echo "$(date +%s.%N) no-gen2-process" >> "$PROBE_FILE"
+            # exit early if strace subprocess no longer exists
+            if ! kill -0 $STRACE_PID 2>/dev/null; then break; fi
           done
           # Kill strace if still running
           kill $STRACE_PID 2>/dev/null
@@ -90,7 +93,26 @@ jobs:
           else
             echo "gen2.elf did NOT produce output"
           fi
-        timeout-minutes: 5
+        timeout-minutes: 4
+
+      - name: Analyze probe data
+        if: always()
+        run: |
+          echo "===== gen2.elf probe analysis ====="
+          if [[ ! -f build/gen2-probe.log ]]; then
+            echo "no probe data"; exit 0
+          fi
+          total=$(wc -l < build/gen2-probe.log)
+          echo "total probe samples: $total"
+          echo "first 5 samples:"
+          head -5 build/gen2-probe.log
+          echo "last 5 samples:"
+          tail -5 build/gen2-probe.log
+          echo "stuck count (samples with same rip as previous):"
+          awk 'NR>1 { prev_rip=$(NF-1); cur_rip=$NF; if (prev_rip == cur_rip) print $0 }' build/gen2-probe.log 2>/dev/null | wc -l
+          echo "rip change timeline (showing unique rip values):"
+          awk '{print $NF}' build/gen2-probe.log | sort -u | head -10
+        timeout-minutes: 1
 
       - name: Compare last 30 strace lines of gen1 vs gen2
         if: always()
