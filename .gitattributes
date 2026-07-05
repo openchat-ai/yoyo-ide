@@ -4,5 +4,5 @@
 *.elf binary
 *.wasm binary
 *.zip binary
-scripts/*.sh text eol=lf
-.github/workflows/*.yml text eol=lf
+scripts/*.sh -text
+.github/workflows/*.yml -text

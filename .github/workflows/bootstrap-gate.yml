@@ -1,4 +1,4 @@
-﻿name: Bootstrap Gate
+name: Bootstrap Gate
 
 on:
   push:
