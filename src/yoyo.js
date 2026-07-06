@@ -125,21 +125,37 @@ module.exports={compile,parse,analyze,CompileError};
 
 if(require.main===module){(async()=>{
   const fs=require('fs');
+  const path=require('path');
   const args=process.argv.slice(2);
   let target='win';
   let backend='x64';
   const rest=[];
+  // --input=FNAME: override the input .ty file (default: first positional)
+  let inputFile=null;
+  // --output=FNAME: override the output .exe file (default: derived from input)
+  let outputFile=null;
   for(let i=0;i<args.length;i++){
     if(args[i].startsWith('--target=')){target=args[i].slice(9).toLowerCase();}
     else if(args[i]==='--target'&&args[i+1]){target=args[i+1].toLowerCase();i++;}
     else if(args[i].startsWith('--backend=')){backend=args[i].slice(10).toLowerCase();}
     else if(args[i]==='--backend'&&args[i+1]){backend=args[i+1].toLowerCase();i++;}
+    else if(args[i].startsWith('--input=')){inputFile=args[i].slice(8);}
+    else if(args[i]==='--input'&&args[i+1]){inputFile=args[i+1];i++;}
+    else if(args[i].startsWith('--output=')){outputFile=args[i].slice(9);}
+    else if(args[i]==='--output'&&args[i+1]){outputFile=args[i+1];i++;}
     else rest.push(args[i]);
   }
-  const ky=fs.readFileSync(rest[0],'utf8');
+  // Resolve input: --input wins, else first positional
+  const inFile=inputFile||rest[0];
+  if(!inFile){
+    process.stderr.write('usage: yoyo.js [--input=FNAME] [--output=FNAME] [--target=win|linux] [--backend=x64] <input.ty>\n');
+    process.exit(2);
+  }
+  const ky=fs.readFileSync(inFile,'utf8');
   const exe=compile(ky,{target,backend});
-  const out=rest[1]||rest[0].replace(/\.(ty|ky)$/,'')+(target==='linux'?'':'.exe');
-  fs.mkdirSync(require('path').dirname(out),{recursive:true});
+  // Resolve output: --output wins, else second positional, else derived from input
+  const out=outputFile||rest[1]||inFile.replace(/\.(ty|ky)$/,'')+(target==='linux'?'':'.exe');
+  fs.mkdirSync(path.dirname(out),{recursive:true});
   fs.writeFileSync(out,exe);
   fs.chmodSync(out,0o755);
   console.log(`Compiled [${target}/${backend}] to ${out} (${exe.length} bytes)`);
