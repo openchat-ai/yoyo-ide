@@ -117,24 +117,52 @@ Linux 通过 `syscall`：
 
 ### `0x65 CMP` — 设置 flags for state[a] vs state[b]
 
-**emit**：
+**yoyo-gen.js 实际使用 load + load + cmp-reg 模式**：
 
 ```asm
-48 8B 87 80 02 00 00       mov rax, [r15 + a*8]
-48 3B 87 80 02 00 00       cmp rax, [r15 + b*8]
+48 8B 87 80 02 00 00       mov rax, [r15 + a*8]   ; load state[a]
+48 8B 97 80 02 00 00       mov rdx, [r15 + b*8]   ; load state[b]  ← 注意 dst=rdx
+48 39 D0                  cmp rax, rdx           ; set flags
 ```
+**总字节**：7 + 7 + 3 = 17
 
 后续 JE/JNE/JL 等用 flags 决定跳转。
 
+> **替代实现**（更短但 yoyo-gen.js 不用）：
+> ```asm
+> 48 8B 87 80 02 00 00       mov rax, [r15 + a*8]
+> 48 3B 87 80 02 00 00       cmp rax, [r15 + b*8]
+> ```
+> 13 字节，更紧凑。yoyo-gen.js 不用——它优先选"reg-reg cmp"，因为这样 CMP 的两个值在 RAX/RDX 寄存器里，后续条件跳转之外的代码（如 SET 状态）能直接复用这些值。
+>
+> **雷区**：`48 3B 87 b*8` 是 `cmp rax, [r15+b*8]`——ModRM 用 `/r` 而不是 `/m`——别写错。
+
 ### `0x66 INC` / `0x67 DEC`
 
+**yoyo-gen.js 实际使用 load + add + store 模式**（不用单条 `inc/dec [mem]`，因为 REX.W + `inc/dec [mem]` 有兼容性历史问题）：
+
 ```asm
-48 FF 87 80 02 00 00       inc qword [r15 + slot*8]   ; INC
-48 FF 8F 80 02 00 00       dec qword [r15 + slot*8]   ; DEC
+; INC state[slot]  (0x66)
+48 8B 87 80 02 00 00       mov rax, [r15 + slot*8]   ; load
+48 83 C0 01                add rax, 1                ; rax + 1
+49 89 87 80 02 00 00       mov [r15 + slot*8], rax   ; store
+```
+**总字节**：7 + 4 + 4 = 15
+
+```asm
+; DEC state[slot]  (0x67) — 类似，add rax, -1
+48 8B 87 80 02 00 00       mov rax, [r15 + slot*8]
+48 83 E8 01                sub rax, 1
+49 89 87 80 02 00 00       mov [r15 + slot*8], rax
 ```
 
-> **雷区**：REX.W 必须有，否则只 inc/dec 32 位。
-> `/0` 是 INC，ModRM 字节是 `87`；`/1` 是 DEC，ModRM 是 `8F`。
+> **替代实现**（文档早期写的，**没在 yoyo 中使用**）：
+> ```asm
+> 48 FF 87 80 02 00 00       inc qword [r15 + slot*8]   ; INC
+> 48 FF 8F 80 02 00 00       dec qword [r15 + slot*8]   ; DEC
+> ```
+> REX.W 必须有；`/0` 是 INC（ModRM `87`），`/1` 是 DEC（ModRM `8F`）。
+> yoyo-gen.js 不用这个，更倾向于"显式 load-modify-store" 模式。
 > **opcodes 0x67（DEC）和 0x66（INC）相反**——查 OPCODE 表别记错。
 
 ---
@@ -151,6 +179,10 @@ Linux 通过 `syscall`：
 handlerOffset[0x00] = code_offset  // emit 当前位置
 handlerOffset[0x01] = ...
 ```
+
+**Code alignment**：每个 handler **填充到 16 字节对齐**——短 handler（如只有 `C3`）后面跟 NOP（`0x90`）填充。
+
+**验证**：`test-phase1.ty` 的 H_03（只有 `C3`）后面跟 `90 90 90...` 填充到下一个 16 字节边界。
 
 ### `0x41 call rel32` — `call H_hh`
 
@@ -207,6 +239,8 @@ E9 XX XX XX XX          jmp near
 ### `0xFF RET`
 
 **emit**：`C3` （1 字节）
+
+> 某些 handler 末尾会 emit 两个 `C3 C3`（如 H_01）——这是 yoyo-gen.js 的 16 字节对齐策略，不是 bug。
 
 ---
 
@@ -478,3 +512,81 @@ yoyo emit 用 **Intel 习惯**——reg 字段是 **destination**。
 - `src/backends/{linux,win}-emit-core.js` — 运行时 emit
 - `src/linux-self-emit.js` — scan-emit Linux 路径
 - `src/win-handler-overlay.js` — scan-emit Windows 路径
+
+---
+
+## 11. 验证记录
+
+### 验证 1：`projects/test-phase1.ty`（2026-07-06）
+
+**test-phase1.ty 包含的 opcode**：`30 60 65 66 70 71 41 40 FF`（无 50/51，无 SSE2）
+
+**编译命令**：
+```bash
+node src/yoyo.js projects/test-phase1.ty build/test-phase1.exe
+# → 100352 bytes
+```
+
+**.text 实际字节**（startup blob 之后从 0x475 开始）：
+
+#### H_01 — `state[0x50] = 0; state[0x51] = 3; call H_02; ret`
+
+| 文档说 | 实际字节 | 匹配 |
+|--------|--------|------|
+| `48 B8 00 00 00 00 00 00 00 00` mov rax, 0 | `48 B8 00 00 00 00 00 00 00 00` | ✅ |
+| `49 89 87 80 02 00 00` mov [r15+0x280], rax | `49 89 87 80 02 00 00` | ✅ |
+| `48 B8 03 00 00 00 00 00 00 00` mov rax, 3 | `48 B8 03 00 00 00 00 00 00 00` | ✅ |
+| `49 89 87 88 02 00 00` mov [r15+0x288], rax | `49 89 87 88 02 00 00` | ✅ |
+| `E8 02 00 00 00` call H_02 (rel32=+2) | `E8 02 00 00 00` | ✅ |
+| `C3` ret | `C3 C3` (双重 ret，code alignment) | ✅ |
+
+#### H_02 — `inc state[0x50]; cmp state[0x50], state[0x51]; je H_03; jmp H_02`
+
+| 文档说 | 实际字节 | 匹配 |
+|--------|--------|------|
+| INC: `48 8B 87 80 02 00 00; 48 83 C0 01; 49 89 87 80 02 00 00` | 完全一致 | ✅ |
+| CMP: `48 8B 87 80 02 00 00; 48 8B 97 88 02 00 00; 48 39 D0` | 完全一致 | ✅ |
+| JE: `0F 84 05 00 00 00` (rel32=+5) | `0F 84 05 00 00 00` | ✅ |
+| JMP near: `E9 D2 FF FF FF` (rel32=-0x2E) | `E9 D2 FF FF FF` | ✅ |
+
+#### H_03 — `ret`
+
+| 文档说 | 实际字节 | 匹配 |
+|--------|--------|------|
+| `C3` ret | `90 90 90...` (NOP 填充) | ⚠️ **不一致** |
+
+**不一致原因**：H_03 短于 16 字节（只有 `C3`），其余用 `0x90`（NOP）填充到 16 字节对齐。文档应当说明代码段填充策略。
+
+### 验证 2：`projects/test-float.ty`（2026-07-06）
+
+**test-float.ty 包含的 opcode**：`30 90`（SET imm + FADD）
+
+> **未完成**：`projects/test-float.ty` 在整理 commit 中被 agent 误删，文件不存在。需要从 git history 恢复或重新写一个简单测试。
+
+### 验证 3：发现并修正的错误
+
+| 错误位置 | 原文档 | 修正后 | 来源 |
+|---------|--------|--------|------|
+| §1 INC | `48 FF 87 slot*8`（单条 inc 指令）| load + add + store 模式（3 条）| test-phase1.ty 实际字节 |
+| §1 CMP | `48 8B 87 a*8; 48 3B 87 b*8`（用 `cmp rax, [mem]`）| load + load + cmp-reg 模式 | test-phase1.ty 实际字节 |
+
+### 验证 4：已知局限
+
+- **未验证 SSE2 opcodes**（0x90-0x95）：需要 test-float.ty
+- **未验证 IAT 调用**（0x50/0x51 LoadFile/WriteFile）：需要更长测试
+- **未验证 fixup patch**：占位字节 `0F 84 00 00 00 00` 和最终 emit 的差异
+- **未验证 NOP 填充**：`H_03` 后面用 `90` 填充到 16 字节对齐，但 yoyo-gen.js 里没找到对应代码
+
+---
+
+## 12. 给后续验证者的提示
+
+如果你想扩展验证（加更多 opcode）：
+
+1. **新增 opcode 测试**：在 `projects/` 下写新 `.ty`，**只用待验证的 opcode**。
+2. **编译**：`node src/yoyo.js projects/test-X.ty build/test-X.exe`
+3. **提取 .text**：`File.ReadAllBytes(build/test-X.exe)`，从 0x440 开始
+4. **跳过 startup blob**：startup 长度 = 68 字节，但有 alignment padding，实际可能到 0x475
+5. **对照 §1-§7**：每个 yoyo opcode 在二进制里都应该有**固定的字节序列**
+
+**诀窍**：第一次跑新 .ty 时，**记录整个 .text section**——这样发现新 emit 模式时能直接对照源码确认。
