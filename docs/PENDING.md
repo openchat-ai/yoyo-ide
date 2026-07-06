@@ -2,58 +2,81 @@
 
 Items intentionally **not** blocking the aggressive evolution track (`docs/evolution.md`).
 
-## Stage 3 Linux bootstrap — `gen2 === gen3`
+## Bootstrap Stage 3 — `gen2 ≡ gen3`
 
 **Gate:** `bash scripts/bootstrap-native.sh 3` → `cmp gen2 gen3` byte-identical.
 
-### Current state (2026-06-30, updated)
+### Current state (2026-07-06, updated)
 
 | Check | Status |
 |-------|--------|
 | M2 TIR-x64 ≡ x64 gen1 | **PASS** (0 byte diffs via `linux-emit-core.js`) |
 | gen1 runs, emits gen2 | OK |
-| gen2 forward fixups (`e8 rel32`) | **3** bad sites via native `H_FE` resolver |
-| gen2 self-host (`gen2` → gen3) | **FAIL** — output differs (~5+ byte pairs in 106496-byte ELF) |
-| `cmp gen2 gen3` | FAIL |
-| `TIR_BOOTSTRAP=1` gen1 | TIR-built gen1 ≡ x64 gen1; Stage 3 still FAIL |
+| gen2 forward fixups (`e8 rel32`) | OK (native `H_FE` resolver) |
+| **M3: gen2 ≡ gen3** | **PASS** (Windows, 2026-07-05, hash `837CFD8...`) |
+| M3: gen2 ≡ gen3 | **Pending verification** (Linux native via `bootstrap-native.sh`) |
+| `TIR_BOOTSTRAP=1` gen1 | TIR-built gen1 ≡ x64 gen1 |
 
-### Root cause (confirmed, 2026-06-30 deep dive)
+### History (retained for context)
 
-`projects/yoyo.ty` is **dual-purpose**: Node (`yoyo.js`) compiles it to gen1; gen1 **scan-emits** the same source into gen2.
+The 2026-06-30 deep dive identified root cause: `projects/yoyo.ty` had **dual-purpose**
+semantics — Node (`yoyo.js`) compiled it to gen1 via `compileLinux`; gen1 **scan-emitted**
+the same source into gen2 via `genLinuxLoadFileHandler` / `H_B0` etc.
 
-| Artifact | Entry startup | `.text` handlers | Runs as compiler? |
-|----------|---------------|------------------|-------------------|
-| gen1 (`build/yoyo`) | `buildLinuxStartup` → state @ `STATE_BUF_OFF` | Node `compileLinux` | **Yes** |
-| gen2 (gen1 scan output) | `buildLinuxOutputStartup` → state @ `OUTPUT_STATE_BUF_OFF` | Scan-emitted | **No** — `codeEnd=30`, immediate EOF |
+| gen1 | scan-emit gen2 | byte-match | runs as compiler? |
+|------|----------------|------------|-------------------|
+| Node `compileLinux` | `buildLinuxOutputStartup` → scan-emit handlers | ❌ divergent (mmap flags, `H_00`/`H_01`) | gen2: codeEnd=30, immediate EOF |
 
-gen1 compiling `yoyo.ty` → output with `codeEnd=27056` (44-byte data diff vs Node compile).  
-gen2 running on `yoyo.ty` → output with `codeEnd=30`, `table[1]=0` (scan never emits handlers).
-
-gen2's own `.text` is byte-identical to gen1's scan output (not to Node gen1 `.text`). The scan-emitted runtime path does not execute the scanner loop correctly — `read_ptr >= end_ptr` on first `H_01` iteration (LoadFile / pointer init failure in emitted `H_00`).
-
-Today:
+Three failures identified in PENDING (pre-fix):
 
 1. **Fixup overflow** — fixed (`20 05/06 1000`, native `H_FE`, `a1` meta-emit).
-2. **Scan-emitted handlers ≠ Node handlers** — gen2 `H_00`/`H_01` machine code differs; runtime scan broken.
-3. **PC-relative handler blobs** — `relocateSlice()` added in `blob-handlers.js`; full blob path still unstable.
+2. **Scan-emitted handlers ≠ Node handlers** — fixed in `compileFromAnalyzed` path
+   (commit `44c1e3d`, 2026-07-05). gen2 H_00/H_01 machine code now matches gen1.
+3. **PC-relative handler blobs** — `relocateSlice()` in `blob-handlers.js`; full blob
+   path still uses 4 pre-emitted `data.blob` entries.
+
+After M3 fix:
+
+> M3 was achieved by rebuilding `build/yoyo.exe` with the current code
+> (TIR intrinsics form of yoyo.ty + compileFromAnalyzed path). The old
+> binary was from commit `e0c1c64` and was out of sync with the current
+> `yoyo.ty`. After rebuild, gen2 ≡ gen3.
+
+### Remaining items (post-M3)
+
+1. **Linux native verification** — `bash scripts/bootstrap-native.sh 3` not yet
+   run end-to-end on Linux. The `linux-self-emit.js` LoadFile mmap flags were
+   rewrittten to match `linux-runtime.emitLoadFile` in commit `1321cc9`. CI
+   workflows (`strace-gen2.yml`, `bootstrap-native.yml`) added for diagnostic
+   capture. **Status:** trace tooling in place; final PASS pending.
+
+2. **Replace `data.blob` with pure TIR** — 4 `data.blob` entries in
+   `projects/yoyo.ty` are pre-emitted x64 bytes that bypass TIR codegen.
+   The `compileFromAnalyzed` path handles them consistently, so they don't
+   cause scan/emit divergence, but they remain as a non-uniform code path.
+   **Optional** (not required for self-hosting) per PHASE5-ROADMAP.md, but
+   required for the "single codegen path" goal of `evolution.md`.
 
 ### Resolution strategy
 
-See `docs/evolution.md` — TIR single codegen path. `src/backends/tir-emit-linux.js` started (partial op lowering).
+See `docs/evolution.md` — TIR single codegen path. Once `data.blob` is
+fully replaced by TIR intrinsics, the scan-emit path can be removed entirely.
+`src/backends/tir-emit-linux.js` is the partial-op replacement already in
+progress.
 
-### What we tried
+### What we tried (historical)
 
 - Larger fixup arrays, always-forward jmp/call emitters
 - Native fixup resolver blob (`buildLinuxFixupResolver`, handler `H_FE`)
 - `a1` opcode (avoid `a0` → H_B0 scanner hijack)
-- Optional `YOYYO_BLOB=1` post-process — unstable / SIGILL on full blob
+- Optional `YOYO_BLOB=1` post-process — unstable / SIGILL on full blob
+- strace-based hang diagnostics (commits `75011ce`…`f6afbdb`)
 
-### Resolution strategy (deferred to evolution)
+These are documented for traceability — the path forward is **TIR single codegen**,
+not more meta-emitter patches.
 
-Do **not** chase byte parity only in the meta-emitter. See `docs/evolution.md`:
+## Items not blocking the evolution track
 
-- **TIR** as single semantic IR after parse
-- **One codegen path** for host (Node) and self-hosted output
-- Bootstrap Stage 3 becomes a property of **TIR determinism**, not `yoyo-gen.js` ↔ scan parity
-
-Until TIR-x64 can compile `projects/yoyo.ty`, Stage 3 remains **open** on branch `cursor/stage3-meta-emitter-fixes-e6fe` (PR #4) with partial fixup fixes landed.
+- TIR-WASM backend — Phase 4/6 work, separate module
+- TIR-AArch64 backend — Phase 7, depends on Phase 6 (data.blob replacement)
+- Typed state slots replacing `state_XX` numbering — TBD per `evolution.md` Phase 4

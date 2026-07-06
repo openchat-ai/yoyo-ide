@@ -160,7 +160,7 @@ TIR_BOOTSTRAP=1 bash scripts/bootstrap-native.sh 3
 |-----------|-----------|--------|
 | M1 | `tir-check` reports ≥120 handlers, ≥500 fixups on `projects/yoyo.ty` | **PASS** |
 | M2 | TIR-x64 gen1 byte-match Node gen1 (Linux + Windows) | **PASS** (0 diffs both) |
-| M3 | `bootstrap-native.sh 3` PASS via TIR path | **FAIL** (scan gen2) |
+| M3 | `bootstrap-native.sh 3` PASS via TIR path | **PASS** (Windows, 2026-07-05) — Linux native verification pending |
 | M4 | `yoyo-gen` outputs TIR, not 2500-line meta-source | **TBD** |
 
 Stage 3 meta-emitter parity is **documented as deferred** in `docs/PENDING.md` until M3.
