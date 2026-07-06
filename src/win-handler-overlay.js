@@ -9,7 +9,7 @@ const { compileFromAnalyzed, extractWinHandlerSlices, buildStringLayout } = requ
 const { handlerFileOrder, relocateSlice } = require('./blob-handlers.js');
 const { PE_TEXT_FILE_OFF } = require('./platform-config.js');
 
-const H00_HEAD = Buffer.from('48b9000000000000000048ba0000040000', 'hex');
+const H00_HEAD = Buffer.from('48b9000000000000000048ba0000060000', 'hex');
 
 function buildRuntimeData(prog) {
   const { strs, strPos, sOff } = buildStringLayout(prog.strings || {});

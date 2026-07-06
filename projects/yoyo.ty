@@ -20,8 +20,8 @@
 ; H_00: Main compiler driver
 ; ============================================================
 40 00
-; Allocate 0x40000-byte output buffer -> state_02
-20 02 00040000
+; Allocate output buffer -> state_02
+20 02 00060000
 ; Read input.ky -> state_0A (buffer ptr), state_0B (file size)
 50 0A 00
 ; Initialize scanner state variables
@@ -90,11 +90,11 @@
 ; Expand output ELF data segment to fit bootstrap blobs
 60 47 02
 61 47 d0
-30 53 1d000
+30 53 38000
 55 47 53
 60 47 02
 61 47 d8
-30 53 1d000
+30 53 38000
 55 47 53
 ; Snapshot handler offset table + final code_offset (after blob patches; map at data+0xFE00)
 60 47 04
@@ -106,85 +106,118 @@
 61 48 19200
 60 47 0e
 55 48 47
-; Patch startup jmp rel32 to handler_table[0] (rel32 = handler[0] - startup_end)
+; Patch startup jmp rel32 to handler_table[0] (rel32 = handler[0] - call_end)
 30 50 00
 41 e7  ; state_4D = handler_table[0]
-60 4a 01 ; state_4A = saved startup length
-69 4d 4a  ; rel32 = handler[0] - startup_end
+62 4d 21  ; rel32 = handler[0] - 33 (call_end)
 60 4c 03
 68 4c 01 ; state_4C = write_base + startupLen
-62 4c 04  ; state_4C -= 4 (rel32 is last 4 bytes of E9 jmp)
+62 4c 04  ; state_4C -= 4 (rel32 at byte 29)
 55 4C 4D
 ; Write output ELF
-a1 48
+30 45 48
+57 03 0E 45
 66 0e
-a1 c7
+30 45 c7
+57 03 0E 45
 66 0e
-a1 c0
+30 45 c0
+57 03 0E 45
 66 0e
-a1 01
+30 45 01
+57 03 0E 45
 66 0e
-a1 00
+30 45 00
+57 03 0E 45
 66 0e
-a1 00
+30 45 00
+57 03 0E 45
 66 0e
-a1 00
+30 45 00
+57 03 0E 45
 66 0e
-a1 48
+30 45 48
+57 03 0E 45
 66 0e
-a1 c7
+30 45 c7
+57 03 0E 45
 66 0e
-a1 c7
+30 45 c7
+57 03 0E 45
 66 0e
-a1 02
+30 45 02
+57 03 0E 45
 66 0e
-a1 00
+30 45 00
+57 03 0E 45
 66 0e
-a1 00
+30 45 00
+57 03 0E 45
 66 0e
-a1 00
+30 45 00
+57 03 0E 45
 66 0e
-a1 00
+30 45 00
+57 03 0E 45
 66 0e
-a1 48
+30 45 48
+57 03 0E 45
 66 0e
-a1 8d
+30 45 8d
+57 03 0E 45
 66 0e
-a1 35
+30 45 35
+57 03 0E 45
 66 0e
-a1 09
+30 45 09
+57 03 0E 45
 66 0e
-a1 00
+30 45 00
+57 03 0E 45
 66 0e
-a1 00
+30 45 00
+57 03 0E 45
 66 0e
-a1 00
+30 45 00
+57 03 0E 45
 66 0e
-a1 48
+30 45 48
+57 03 0E 45
 66 0e
-a1 c7
+30 45 c7
+57 03 0E 45
 66 0e
-a1 c2
+30 45 c2
+57 03 0E 45
 66 0e
-a1 02
+30 45 02
+57 03 0E 45
 66 0e
-a1 00
+30 45 00
+57 03 0E 45
 66 0e
-a1 00
+30 45 00
+57 03 0E 45
 66 0e
-a1 00
+30 45 00
+57 03 0E 45
 66 0e
-a1 00
+30 45 00
+57 03 0E 45
 66 0e
-a1 0f
+30 45 0f
+57 03 0E 45
 66 0e
-a1 05
+30 45 05
+57 03 0E 45
 66 0e
-a1 4d
+30 45 4d
+57 03 0E 45
 66 0e
-a1 0a
+30 45 0a
+57 03 0E 45
 66 0e
-30 0e 26000
+30 0e 41000
 51 02 01 0E
 ; Copy Linux exit syscall bytes into output .text and terminate
 60 4c 03

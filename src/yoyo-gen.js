@@ -121,8 +121,14 @@ tplPE.setData(Buffer.alloc(SHELL_DATA_SIZE, 0));
 const peBytes = tplPE.build();
 const peHex = peBytes.toString('hex');
 
+// Compute output data segment size: match yoyo.js finish() allocation
+// (Buffer.alloc(0x10000 + STATE_BUF_OFF + 0x20000, 0)).
+const STATE_BUF_OFF = 0x8000;
+const OUTPUT_DATA_BASE = 0x10000;
+const OUTPUT_DATA_OVERHEAD = STATE_BUF_OFF + 0x20000;
+const OUTPUT_DATA_FIXED = OUTPUT_DATA_BASE + OUTPUT_DATA_OVERHEAD; // 0x38000
 const OUTPUT_DATA_NEED = ((Math.max(
-  RUNTIME_DATA_SIZE,
+  OUTPUT_DATA_FIXED,
   TEMPLATE_BLOB_OFF + peBytes.length,
   STARTUP_BLOB_OFF + maxStartupLen,
   useNativeOverlay ? HANDLER_MAP_EMBED_OFF + HANDLER_MAP_EMBED_SIZE : 0,
@@ -219,8 +225,6 @@ const tplCopyLen = isLinux ? tplBlobBytes.length : peBytes.length;
 const tplWriteLen = isLinux ? tplBytes.length : (useNativeOverlay ? outputWriteLen : tplBytes.length);
 const tplTextOff = isLinux ? ELF_TEXT_FILE_OFF : PE_TEXT_FILE_OFF;
 const outputStartup = isLinux ? linuxOutputStartup : startupBlob;
-const ELF_DATA_FILESZ_OFF = 0xD0;
-const ELF_DATA_MEMSZ_OFF  = 0xD8;
 
 C('Embedded template blob (' + tplCopyLen + ' = 0x' + hx(tplCopyLen, 4) + ' bytes)');
 L('13 ' + hx(TEMPLATE_BLOB_OFF, 4) + ' s' + tplHex);
@@ -247,8 +251,8 @@ C('============================================================');
 C('H_00: Main compiler driver');
 C('============================================================');
 L('40 00');
-C('Allocate 0x40000-byte output buffer -> state_02');
-L('20 02 00040000');
+C('Allocate output buffer -> state_02');
+L('20 02 00060000');  // 0x60000 = 384KB, covers large embedded template
 
 C('Read input.ky -> state_0A (buffer ptr), state_0B (file size)');
 L('50 0A 00');
@@ -369,12 +373,28 @@ if (isLinux) {
 if (isLinux) {
   C('Expand output ELF data segment to fit bootstrap blobs');
   L(GET(0x47, 0x02));
-  L(ADD(0x47, ELF_DATA_FILESZ_OFF));
+  L(ADD(0x47, 0xD0));
   L(SET(0x53, TPL_DATA_SIZE));
   L('55 47 53');
   L(GET(0x47, 0x02));
-  L(ADD(0x47, ELF_DATA_MEMSZ_OFF));
+  L(ADD(0x47, 0xD8));
   L(SET(0x53, TPL_DATA_SIZE));
+  L('55 47 53');
+}
+
+if (!isLinux && useNativeOverlay) {
+  C('Expand output PE .rdata / SizeOfImage for bootstrap blob embeds');
+  L(GET(0x47, 0x02));
+  L(ADD(0x47, 0x228));
+  L(SET(0x53, PE_RDATA_VS));
+  L('55 47 53');
+  L(GET(0x47, 0x02));
+  L(ADD(0x47, 0x230));
+  L(SET(0x53, PE_RDATA_RS));
+  L('55 47 53');
+  L(GET(0x47, 0x02));
+  L(ADD(0x47, 0x140));
+  L(SET(0x53, PE_SIZE_OF_IMAGE));
   L('55 47 53');
 }
 
@@ -404,70 +424,33 @@ if (useNativeOverlay) {
   L('55 48 47');
 }
 
-C('Patch startup jmp rel32 to handler_table[0] (rel32 = handler[0] - startup_end)');
+C('Patch startup jmp rel32 to handler_table[0] (rel32 = handler[0] - call_end)');
 L(SET(0x50, 0));
 L(CH(0xE7) + '  ; state_4D = handler_table[0]');
-L(GET(0x4A, 0x01) + ' ; state_4A = saved startup length');
-L(SUBV(0x4D, 0x4A) + '  ; rel32 = handler[0] - startup_end');
+// rel32 = handler[0] - call_end (call_end = byte after call/jmp in startup blob)
+const callEnd = isLinux ? 33 : outputStartup.length;
+L(SUB(0x4D, callEnd) + `  ; rel32 = handler[0] - ${callEnd} (call_end)`);
 L(GET(0x4C, 0x03));
 L(ADDV(0x4C, 0x01) + ' ; state_4C = write_base + startupLen');
-L(SUB(0x4C, 4) + '  ; state_4C -= 4 (rel32 is last 4 bytes of E9 jmp)');
+// subOff = startupLen - byte_of_rel32. Linux: 42-29=13, Windows: 96-92=4
+const subOff = isLinux ? (outputStartup.length - 29) : 4;
+L(SUB(0x4C, subOff) + '  ; state_4C -= ' + subOff + ' (rel32 at byte ' + (outputStartup.length - subOff) + ')');
 L('55 4C 4D');
-
-if (!isLinux && useNativeOverlay) {
-  C('Expand output PE .rdata / SizeOfImage for bootstrap blob embeds');
-  L(GET(0x47, 0x02));
-  L(ADD(0x47, 0x228));
-  L(SET(0x53, PE_RDATA_VS));
-  L('55 47 53');
-  L(GET(0x47, 0x02));
-  L(ADD(0x47, 0x230));
-  L(SET(0x53, PE_RDATA_RS));
-  L('55 47 53');
-  L(GET(0x47, 0x02));
-  L(ADD(0x47, 0x140));
-  L(SET(0x53, PE_SIZE_OF_IMAGE));
-  L('55 47 53');
-}
 
 C('Write output ELF');
 // DEBUG TRACE: write 'M\n' to stderr before WriteFile
-// Use 0xA1 opcode (single-byte emit) for raw bytes so both Node and
-// scan-emit produce identical x64.
-L('a1 48'); L(INC(0x0E));  // 48
-L('a1 c7'); L(INC(0x0E));  // c7
-L('a1 c0'); L(INC(0x0E));  // c0
-L('a1 01'); L(INC(0x0E));  // 01
-L('a1 00'); L(INC(0x0E));  // 00
-L('a1 00'); L(INC(0x0E));  // 00
-L('a1 00'); L(INC(0x0E));  // 00
-L('a1 48'); L(INC(0x0E));  // 48 (mov rax, 1 - completes 48 c7 c0 01 00 00 00)
-L('a1 c7'); L(INC(0x0E));  // c7
-L('a1 c7'); L(INC(0x0E));  // c7
-L('a1 02'); L(INC(0x0E));  // 02
-L('a1 00'); L(INC(0x0E));  // 00
-L('a1 00'); L(INC(0x0E));  // 00
-L('a1 00'); L(INC(0x0E));  // 00
-L('a1 00'); L(INC(0x0E));  // 00
-L('a1 48'); L(INC(0x0E));  // 48 (mov rdi, 2)
-L('a1 8d'); L(INC(0x0E));  // 8d
-L('a1 35'); L(INC(0x0E));  // 35
-L('a1 09'); L(INC(0x0E));  // 09 (disp32 to skip 7+2+2 = 11 bytes)
-L('a1 00'); L(INC(0x0E));  // 00
-L('a1 00'); L(INC(0x0E));  // 00
-L('a1 00'); L(INC(0x0E));  // 00
-L('a1 48'); L(INC(0x0E));  // 48 (mov rdx, 2)
-L('a1 c7'); L(INC(0x0E));  // c7
-L('a1 c2'); L(INC(0x0E));  // c2
-L('a1 02'); L(INC(0x0E));  // 02
-L('a1 00'); L(INC(0x0E));  // 00
-L('a1 00'); L(INC(0x0E));  // 00
-L('a1 00'); L(INC(0x0E));  // 00
-L('a1 00'); L(INC(0x0E));  // 00
-L('a1 0f'); L(INC(0x0E));  // 0f
-L('a1 05'); L(INC(0x0E));  // 05 (syscall)
-L('a1 4d'); L(INC(0x0E));  // 4d ('M')
-L('a1 0a'); L(INC(0x0E));  // 0a ('\n')
+// Use SET+57+INC instead of a1 (a1 is meta-compile-only, breaks gen2.elf's .text)
+const emitByte = (v) => { L(SET(0x45, v)); L('57 03 0E 45'); L(INC(0x0E)); };
+emitByte(0x48); emitByte(0xc7); emitByte(0xc0); emitByte(0x01);  // mov rax, 1
+emitByte(0x00); emitByte(0x00); emitByte(0x00);
+emitByte(0x48); emitByte(0xc7); emitByte(0xc7); emitByte(0x02);  // mov rdi, 2
+emitByte(0x00); emitByte(0x00); emitByte(0x00); emitByte(0x00);
+emitByte(0x48); emitByte(0x8d); emitByte(0x35); emitByte(0x09);  // lea rsi, [rip+9]
+emitByte(0x00); emitByte(0x00); emitByte(0x00);
+emitByte(0x48); emitByte(0xc7); emitByte(0xc2); emitByte(0x02);  // mov rdx, 2
+emitByte(0x00); emitByte(0x00); emitByte(0x00); emitByte(0x00);
+emitByte(0x0f); emitByte(0x05);  // syscall
+emitByte(0x4d); emitByte(0x0a);  // "M\n"
 L(SET(0x0E, tplWriteLen));
 L('51 02 01 0E');
 if (isLinux) {
