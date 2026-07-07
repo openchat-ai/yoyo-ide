@@ -6,16 +6,59 @@ Items intentionally **not** blocking the aggressive evolution track (`docs/evolu
 
 **Gate:** `bash scripts/bootstrap-native.sh 3` → `cmp gen2 gen3` byte-identical.
 
-### Current state (2026-07-06, updated)
+### Current state (2026-07-07, updated)
 
 | Check | Status |
 |-------|--------|
 | M2 TIR-x64 ≡ x64 gen1 | **PASS** (0 byte diffs via `linux-emit-core.js`) |
-| gen1 runs, emits gen2 | OK |
+| gen1 runs, emits gen2 | OK (Windows: gen2 = 264192 B, input-independent template copy) |
 | gen2 forward fixups (`e8 rel32`) | OK (native `H_FE` resolver) |
-| **M3: gen2 ≡ gen3** | **PASS** (Windows, 2026-07-05, hash `837CFD8...`) |
-| M3: gen2 ≡ gen3 | **Pending verification** (Linux native via `bootstrap-native.sh`) |
+| **M3: gen2 ≡ gen3 (Windows)** | **FAIL** (2026-07-07 re-test: gen2 exits 0 but emits **no** output.exe) |
+| M3: gen2 ≡ gen3 (Linux) | **Pending verification** (native via `bootstrap-native.sh`) |
+| `relocateSlice` byte corruption | **FIXED** (2026-07-07, instruction-boundary decoder) |
 | `TIR_BOOTSTRAP=1` gen1 | TIR-built gen1 ≡ x64 gen1 |
+
+> **2026-07-05 "M3 PASS (hash 837CFD8…)" is retracted.** Re-tested 2026-07-07 with
+> reliable `cmd /c` runs (PowerShell `Start-Process` exit codes are unreliable — see
+> the AGENTS.md blood-lesson). Current Windows behavior: `gen1` (node-compiled, 178 KB)
+> always emits `output.exe` (even with **no** `input.ky`); `gen2` (overlay self-host,
+> 264 KB) **never** emits output, exits 0 (not a crash). The old "AV / rep-movsb
+> count 0x12E800" symptom no longer reproduces — that was an older build.
+
+### relocateSlice fix (2026-07-07)
+
+`relocateSlice` / `relocateSliceWithLayout` in `src/blob-handlers.js` used a byte-scan
+for `e8`/`e9` with a partial `isModRMconsumer` heuristic. It only skipped `>=0xc0`
+and `0x88-0x8b`, so it **still corrupted** `48 83 e8 xx` (sub rax,imm8),
+`48 81 e8 xx` (sub rax,imm32), `48 83 e9 xx`, and `e8`/`e9` bytes inside `movabs`
+immediates — where the `e8`/`e9` is a ModRM/immediate byte, not a branch opcode.
+
+Rewritten to use an **instruction-boundary-aware x64 decoder** (`decodeInstr`, ported
+from the yoyo-decoder tool's `src/linscan.rs`). It relocates only the rel32/disp32
+field of genuine `call/jmp/jcc/call[rip]/jmp[rip]/lea[rip]`. Verified: 10/10 unit
+patterns (traps untouched, real branches relocated); changed gen1/gen2 bytes (proving
+real prior corruption); `node yoyo.js` still builds gen1; M1→M2 still works;
+`test-phase1` output byte-identical (no regression).
+
+**Note:** this fix is necessary but **not sufficient** for Windows M3 — see below.
+
+### Windows M2→M3 second root cause (open, 2026-07-07)
+
+After the relocateSlice fix, M2→M3 still fails. Evidence (reliable `cmd` runs):
+
+- `gen1` emits `output.exe` (264192 B) **regardless of `input.ky`** — template-copy driven.
+- `gen2` emits nothing, exit 0, with or without `input.ky` — **not a crash**.
+- gen1 (node direct compile) does **not** exercise the overlay+handler-map self-host
+  mechanism for itself; gen2 depends entirely on it. So gen1 working does **not**
+  validate the overlay path — only gen2 running does.
+- Most likely: gen2 reaches its `WriteFile` but `CreateFileA("output.exe")` gets a bad
+  pointer (a mis-relocated `lea rcx,[rip+disp]` to the "output.exe" string at data
+  +0x8822), so file creation fails silently and gen2 exits 0. **Unconfirmed** — needs
+  a runtime debugger (x64dbg/WinDbg) breakpoint on gen2's `CreateFileA`/`WriteFile`
+  (`FF 15` IAT calls) to inspect `rcx`.
+- Ruled out: relocateSlice (fixed, still fails); the unconditional Linux-`syscall`
+  debug trace at `yoyo-gen.js:444-453` (it is emitted *by* gen2 into gen3, harmless to
+  gen2's own run).
 
 ### History (retained for context)
 

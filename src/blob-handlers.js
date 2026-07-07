@@ -73,40 +73,102 @@ function a1ByteLines(buf) {
   return lines;
 }
 
-/**
- * Patch PC-relative rel32 in e8/e9/0f8x when relocating a slice from oldBase to newBase.
- */
-function isModRMconsumer(b) {
-  // Provable cases where the byte IS an opcode that consumes the next byte as ModRM:
-  //   bits 7-6 = 11 (0xc0-0xff): register-to-register ModRM
-  //   range 0x88-0x8b: MOV opcodes (always consume ModRM)
-  return (b >= 0xc0) || (b >= 0x88 && b <= 0x8b);
+// ── Instruction-boundary-aware x64 decoder (yoyo emit subset) ──────────────
+// A naive byte-scan for e8/e9 cannot tell a real call/jmp opcode from an
+// e8/e9 byte living inside an immediate (movabs), a RIP displacement, or a
+// ModRM byte (e.g. `48 83 e8 XX` = sub rax,imm8). Relocating such a data byte
+// corrupts the instruction — the root cause of the Windows M2→M3 crash.
+// This decoder computes each instruction's true length so relocation only
+// ever touches the rel32/disp32 field of a genuine branch/RIP reference.
+// Ported from the yoyo-decoder tool's src/linscan.rs.
+function _modrmLen(b, p) {
+  if (p >= b.length) return 1;
+  const modrm = b[p];
+  const md = modrm >> 6;
+  const rm = modrm & 7;
+  if (md === 3) return 1;
+  let len = 1;
+  let baseDisp32 = false;
+  if (rm === 4) { // SIB byte
+    len += 1;
+    if (md === 0 && p + 1 < b.length && (b[p + 1] & 7) === 5) baseDisp32 = true;
+  }
+  if (md === 0) { if (rm === 5 || baseDisp32) len += 4; } // disp32 (RIP when rm==5)
+  else if (md === 1) len += 1;                            // disp8
+  else if (md === 2) len += 4;                            // disp32
+  return len;
 }
+
+// Decode one instruction at offset i. Returns { len, relOff } where relOff is
+// the byte offset of a rel32/disp32 field to relocate, or -1 if the
+// instruction has no relocatable PC-relative field. On an unrecognized
+// opcode, returns len>=1 with relOff -1 so the caller advances safely.
+function decodeInstr(b, i) {
+  const start = i;
+  let p = i;
+  while (p < b.length && (b[p] === 0xF3 || b[p] === 0xF2 || b[p] === 0x66)) p++; // legacy prefixes
+  let rexW = false;
+  if (p < b.length && (b[p] & 0xF0) === 0x40) { rexW = (b[p] & 0x08) !== 0; p++; } // REX
+  if (p >= b.length) return { len: Math.max(1, p - start), relOff: -1 };
+  const op = b[p]; p++;
+  const none = len => ({ len: Math.max(1, len), relOff: -1 });
+
+  if (op === 0x90 || op === 0xC3) return none(p - start);          // nop / ret
+  if (op === 0xE8 || op === 0xE9) return { len: p - start + 4, relOff: p }; // call/jmp rel32
+  if (op === 0xEB) return none(p - start + 1);                    // jmp rel8
+  if (op >= 0x70 && op <= 0x7F) return none(p - start + 1);       // jcc rel8
+  if (op >= 0xB8 && op <= 0xBF) return none(p - start + (rexW ? 8 : 4)); // mov r, imm
+  if (op >= 0x50 && op <= 0x5F) return none(p - start);           // push/pop r
+  if (op === 0x0F) {
+    if (p >= b.length) return none(p - start);
+    const op2 = b[p]; p++;
+    if (op2 >= 0x80 && op2 <= 0x8F) return { len: p - start + 4, relOff: p }; // jcc rel32
+    if (op2 === 0x05) return none(p - start);                     // syscall
+    if (op2 === 0xAF || op2 === 0xB6 || op2 === 0xB7 || op2 === 0xBE || op2 === 0xBF)
+      return none(p - start + _modrmLen(b, p));                   // imul / movzx / movsx
+    return none(p - start);                                       // unknown 0F
+  }
+  if (op === 0x89 || op === 0x8B || op === 0x01 || op === 0x03 || op === 0x29 ||
+      op === 0x2B || op === 0x39 || op === 0x3B || op === 0x31 || op === 0x09 ||
+      op === 0x21 || op === 0x85 || op === 0x88 || op === 0x8A)
+    return none(p - start + _modrmLen(b, p));                     // ALU/mov reg forms
+  if (op === 0x8D) {                                              // lea (maybe RIP-relative)
+    const ml = _modrmLen(b, p);
+    const modrm = p < b.length ? b[p] : 0;
+    const riprel = (modrm >> 6) === 0 && (modrm & 7) === 5;
+    return riprel ? { len: p - start + ml, relOff: p + 1 } : none(p - start + ml);
+  }
+  if (op === 0x83 || op === 0xC6) return none(p - start + _modrmLen(b, p) + 1); // + imm8
+  if (op === 0x81 || op === 0xC7) return none(p - start + _modrmLen(b, p) + 4); // + imm32
+  if (op === 0xA4) return none(p - start);                        // movsb (rep prefix handled)
+  if (op === 0xFF) {                                              // group: call/jmp [rip] etc.
+    if (p >= b.length) return none(p - start);
+    const modrm = b[p];
+    const reg = (modrm >> 3) & 7;
+    const riprel = (modrm >> 6) === 0 && (modrm & 7) === 5;
+    const ml = _modrmLen(b, p);
+    if ((reg === 2 || reg === 4) && riprel) return { len: p - start + ml, relOff: p + 1 };
+    return none(p - start + ml);
+  }
+  return none(p - start);                                         // unknown opcode
+}
+
+/**
+ * Relocate PC-relative rel32/disp32 fields when moving a code slice from
+ * oldBase to newBase. Uses instruction-boundary decoding so only genuine
+ * call/jmp/jcc/call[rip]/jmp[rip]/lea[rip] fields are patched — never a data
+ * byte that merely happens to equal e8/e9.
+ */
 function relocateSlice(buf, oldBase, newBase) {
   const delta = newBase - oldBase;
   const out = Buffer.from(buf);
-  for (let i = 0; i < out.length - 4; i++) {
-    if (out[i] === 0xe8 || out[i] === 0xe9) {
-      // Skip false positive: e8/e9 as ModRM (preceded by an opcode that consumes ModRM)
-      let prev = i - 1;
-      if (prev >= 0 && out[prev] >= 0x40 && out[prev] <= 0x4f) prev = i - 2;
-      if (prev >= 0 && isModRMconsumer(out[prev])) continue;
-      out.writeInt32LE(out.readInt32LE(i + 1) - delta, i + 1);
-      i += 4;
-    } else if (out[i] === 0x0f && out[i + 1] >= 0x80 && out[i + 1] <= 0x8f && i + 5 < out.length) {
-      out.writeInt32LE(out.readInt32LE(i + 2) - delta, i + 2);
-      i += 5;
-    } else if (out[i] === 0xff && (out[i + 1] === 0x15 || out[i + 1] === 0x25) && i + 5 < out.length) {
-      out.writeInt32LE(out.readInt32LE(i + 2) - delta, i + 2);
-      i += 5;
-    } else {
-      let j = i;
-      if (out[j] >= 0x40 && out[j] <= 0x4f) j++;
-      if (j < out.length && out[j] === 0x8d && j + 6 <= out.length && (out[j + 1] & 0xc7) === 0x05) {
-        out.writeInt32LE(out.readInt32LE(j + 2) - delta, j + 2);
-        i = j + 5;
-      }
+  let i = 0;
+  while (i < out.length) {
+    const { len, relOff } = decodeInstr(out, i);
+    if (relOff >= 0 && relOff + 4 <= out.length) {
+      out.writeInt32LE(out.readInt32LE(relOff) - delta, relOff);
     }
+    i += len > 0 ? len : 1;
   }
   return out;
 }
@@ -149,21 +211,31 @@ function mapAbsOffset(oldAbs, order, metaRefOffset, actualRefOffset, metaSizes) 
 
 function relocateSliceWithLayout(buf, metaBase, newBase, order, metaRefOffset, actualRefOffset, metaSizes) {
   const out = Buffer.from(buf);
-  for (let i = 0; i < out.length - 4; i++) {
+  let i = 0;
+  while (i < out.length) {
     let instrLen = 0;
-    let relOff = 0;
-    if (out[i] === 0xe8 || out[i] === 0xe9) {
+    let relOff = -1;
+    // Layout-relocated instructions (unprefixed in yoyo emit): call/jmp rel32,
+    // jcc rel32, call/jmp [rip]. Detected at the true instruction start.
+    if (i + 5 <= out.length && (out[i] === 0xe8 || out[i] === 0xe9)) {
       instrLen = 5; relOff = i + 1;
-    } else if (out[i] === 0x0f && out[i + 1] >= 0x80 && out[i + 1] <= 0x8f && i + 5 < out.length) {
+    } else if (i + 6 <= out.length && out[i] === 0x0f && out[i + 1] >= 0x80 && out[i + 1] <= 0x8f) {
       instrLen = 6; relOff = i + 2;
-    } else if (out[i] === 0xff && (out[i + 1] === 0x15 || out[i + 1] === 0x25) && i + 5 < out.length) {
+    } else if (i + 6 <= out.length && out[i] === 0xff && (out[i + 1] === 0x15 || out[i + 1] === 0x25)) {
       instrLen = 6; relOff = i + 2;
-    } else continue;
-    const oldRel = out.readInt32LE(relOff);
-    const oldAbs = metaBase + i + instrLen + oldRel;
-    const newAbs = mapAbsOffset(oldAbs, order, metaRefOffset, actualRefOffset, metaSizes);
-    out.writeInt32LE(newAbs - (newBase + i + instrLen), relOff);
-    i += instrLen - 1;
+    }
+    if (relOff >= 0) {
+      const oldRel = out.readInt32LE(relOff);
+      const oldAbs = metaBase + i + instrLen + oldRel;
+      const newAbs = mapAbsOffset(oldAbs, order, metaRefOffset, actualRefOffset, metaSizes);
+      out.writeInt32LE(newAbs - (newBase + i + instrLen), relOff);
+      i += instrLen;
+    } else {
+      // Not a layout reloc — advance by the true instruction length so an
+      // e8/e9 data byte inside an immediate/ModRM/disp is never mis-read.
+      const d = decodeInstr(out, i);
+      i += d.len > 0 ? d.len : 1;
+    }
   }
   return out;
 }

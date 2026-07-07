@@ -83,7 +83,7 @@ Linux 通过 `syscall`：
 **emit**：
 
 ```asm
-48 8B 87 80 02 00 00       mov rax, [r15 + src*8]   ; load state[src]
+49 8B 87 80 02 00 00       mov rax, [r15 + src*8]   ; load state[src]  (REX.WB: R15 base)
 49 89 87 80 02 00 00       mov [r15 + dst*8], rax  ; store state[dst]
 ```
 
@@ -120,8 +120,8 @@ Linux 通过 `syscall`：
 **yoyo-gen.js 实际使用 load + load + cmp-reg 模式**：
 
 ```asm
-48 8B 87 80 02 00 00       mov rax, [r15 + a*8]   ; load state[a]
-48 8B 97 80 02 00 00       mov rdx, [r15 + b*8]   ; load state[b]  ← 注意 dst=rdx
+49 8B 87 80 02 00 00       mov rax, [r15 + a*8]   ; load state[a]
+49 8B 97 80 02 00 00       mov rdx, [r15 + b*8]   ; load state[b]  ← 注意 dst=rdx
 48 39 D0                  cmp rax, rdx           ; set flags
 ```
 **总字节**：7 + 7 + 3 = 17
@@ -130,7 +130,7 @@ Linux 通过 `syscall`：
 
 > **替代实现**（更短但 yoyo-gen.js 不用）：
 > ```asm
-> 48 8B 87 80 02 00 00       mov rax, [r15 + a*8]
+> 49 8B 87 80 02 00 00       mov rax, [r15 + a*8]
 > 48 3B 87 80 02 00 00       cmp rax, [r15 + b*8]
 > ```
 > 13 字节，更紧凑。yoyo-gen.js 不用——它优先选"reg-reg cmp"，因为这样 CMP 的两个值在 RAX/RDX 寄存器里，后续条件跳转之外的代码（如 SET 状态）能直接复用这些值。
@@ -143,7 +143,7 @@ Linux 通过 `syscall`：
 
 ```asm
 ; INC state[slot]  (0x66)
-48 8B 87 80 02 00 00       mov rax, [r15 + slot*8]   ; load
+49 8B 87 80 02 00 00       mov rax, [r15 + slot*8]   ; load
 48 83 C0 01                add rax, 1                ; rax + 1
 49 89 87 80 02 00 00       mov [r15 + slot*8], rax   ; store
 ```
@@ -151,7 +151,7 @@ Linux 通过 `syscall`：
 
 ```asm
 ; DEC state[slot]  (0x67) — 类似，add rax, -1
-48 8B 87 80 02 00 00       mov rax, [r15 + slot*8]
+49 8B 87 80 02 00 00       mov rax, [r15 + slot*8]
 48 83 E8 01                sub rax, 1
 49 89 87 80 02 00 00       mov [r15 + slot*8], rax
 ```
@@ -544,8 +544,8 @@ node src/yoyo.js projects/test-phase1.ty build/test-phase1.exe
 
 | 文档说 | 实际字节 | 匹配 |
 |--------|--------|------|
-| INC: `48 8B 87 80 02 00 00; 48 83 C0 01; 49 89 87 80 02 00 00` | 完全一致 | ✅ |
-| CMP: `48 8B 87 80 02 00 00; 48 8B 97 88 02 00 00; 48 39 D0` | 完全一致 | ✅ |
+| INC: `49 8B 87 80 02 00 00; 48 83 C0 01; 49 89 87 80 02 00 00` | 完全一致 | ✅ |
+| CMP: `49 8B 87 80 02 00 00; 49 8B 97 88 02 00 00; 48 39 D0` | 完全一致 | ✅ |
 | JE: `0F 84 05 00 00 00` (rel32=+5) | `0F 84 05 00 00 00` | ✅ |
 | JMP near: `E9 D2 FF FF FF` (rel32=-0x2E) | `E9 D2 FF FF FF` | ✅ |
 
@@ -569,6 +569,12 @@ node src/yoyo.js projects/test-phase1.ty build/test-phase1.exe
 |---------|--------|--------|------|
 | §1 INC | `48 FF 87 slot*8`（单条 inc 指令）| load + add + store 模式（3 条）| test-phase1.ty 实际字节 |
 | §1 CMP | `48 8B 87 a*8; 48 3B 87 b*8`（用 `cmp rax, [mem]`）| load + load + cmp-reg 模式 | test-phase1.ty 实际字节 |
+| §1/§11 所有 state **load** | `48 8B 87` / `48 8B 97`（REX.W only）| `49 8B 87` / `49 8B 97`（REX.**WB**，R15 是 base 必须带 REX.B）| yoyo-decoder M4 + 反汇编 build/test-phase1.exe 实测（2026-07-07） |
+
+> **REX.B 修正（2026-07-07）**：state 数组 base 在 **R15**。R15 作 ModRM base（rm=111）**必须**带 REX.B，
+> 所以 load(`mov rax,[r15+disp]`)= `49 8B 87`，与 store(`mov [r15+disp],rax`)= `49 89 87` 一致。
+> 旧文档写成 `48 8B 87`（漏了 REX.B）。用 yoyo-decoder 的 `scan-relocs`/emit 逻辑对 `build/test-phase1.exe`
+> 逐字节比对确认真机器码就是 `49 8B 87 80 02 00 00`。
 
 ### 验证 4：已知局限
 
