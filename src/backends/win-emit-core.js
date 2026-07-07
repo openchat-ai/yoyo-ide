@@ -373,7 +373,7 @@ function extractWinHandlerSlices(prog, opts = {}) {
     const { isBlobHandlerOps } = require('../blob-handlers.js');
     if (isBlobHandlerOps(ops)) {
       for (const op of ops) {
-        if (op.op === 0xA1 || op.op === 0xFF) ctx.emit(op);
+        if (op.op === 0xA1) ctx.emit(op);
       }
     } else {
       for (const op of ops) ctx.emit(op);
