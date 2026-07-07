@@ -166,7 +166,16 @@ function relocateSlice(buf, oldBase, newBase) {
   while (i < out.length) {
     const { len, relOff } = decodeInstr(out, i);
     if (relOff >= 0 && relOff + 4 <= out.length) {
-      out.writeInt32LE(out.readInt32LE(relOff) - delta, relOff);
+      let checkByte = out[i];
+      if ((checkByte & 0xF0) === 0x40) checkByte = out[i + 1]; // skip REX
+      const isInternal = (checkByte === 0xE8 || checkByte === 0xE9 || checkByte === 0x0F);
+      if (isInternal) {
+        // E8/E9/0F8x target other handlers within the same block;
+        // caller + callee shift together, rel32 stays correct.
+      } else {
+        // FF15/FF25 (IAT) and LEA rip (data) target fixed external addresses.
+        out.writeInt32LE(out.readInt32LE(relOff) - delta, relOff);
+      }
     }
     i += len > 0 ? len : 1;
   }
