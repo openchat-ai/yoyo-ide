@@ -71,10 +71,14 @@ function buildStartup() {
   E.call_rip(b, IAT.GetStdHandle - (CODE_RVA + gsOff + 4 + 6));
   E.add_ri(b, 4, 0x28);         // add rsp, 0x28
   E.mov_rr(b, 14, 0);           // mov r14, rax  (stdout handle)
-  E.jmp_rel(b, 9);              // jmp to overlay at offset 109 (rel32 = 109 - 100 = 9)
+  const callOff = b.tell();
+  E.call_rel(b, 0);              // call overlay (rel32 patched at yoyo-gen time)
+  E.xor_rr(b, 1, 1);             // xor rcx, rcx
+  E.call_rip(b, IAT.ExitProcess - (CODE_RVA + callOff + 14));
   return b.b.slice(0, b.tell());
 }
 const startupBlob = buildStartup();
+const STARTUP_CALL_REL32_OFF = 96; // rel32 position within startup blob
 
 const LINUX_CODE_RVA = BASE + 0x1000;
 const linuxOutputStartup = buildLinuxOutputStartup(LINUX_CODE_RVA + TEXT_VS);
@@ -1402,7 +1406,7 @@ B();
 // ── H_37/H_43: opcode 0x41 hh - emit CALL rel32 (hh==0 -> JMP for meta-output layout) ──
 C('H_37: opcode 0x41 hh - emit CALL rel32 (E8 disp32); hh==0 uses JMP (E9)');
 L(H(0x37));
-C('Handler 0 entry is emitted inline after top-level call site — emit JMP not CALL');
+C('Handler 0: JMP (E9) because fixup arrays not yet allocated at top-level');
 L(SET(0x41, 0)); L(CMP(0x50, 0x41)); L(JE(0x36) + '  ; hh==0 -> H_36 emit JMP');
 L(JMP(0x43) + '  ; always forward CALL fixup');
 B();
@@ -2139,12 +2143,18 @@ if (useNativeOverlay) {
     }
   }
   const startupTotal = outputStartup.length + overlay.imageLen;
-  content = content.replace('84 4C ' + hx(STARTUP_BLOB_OFF, 4) + ' 00 ; __STARTUP_TOTAL__', '84 4C ' + hx(STARTUP_BLOB_OFF, 4) + ' ' + hx(startupTotal, 4));
+  const startupTotalPatched = '84 4C ' + hx(STARTUP_BLOB_OFF, 4) + ' ' + hx(startupTotal, 4);
+  content = content.replace(/84 4C [0-9a-f]{4} 00 ; __STARTUP_TOTAL__/g, startupTotalPatched);
   // Merge overlay data into startup blob (one 84 copy to .text)
   const startupHexLine = '13 ' + hx(STARTUP_BLOB_OFF, 4) + ' s';
   const oldStartupHex = outputStartup.toString('hex');
   const mergedHex = oldStartupHex + overlay.image.toString('hex');
-  content = content.replace(startupHexLine + oldStartupHex, startupHexLine + mergedHex);
+  // Patch startup CALL rel32 at byte 96, write merged hex
+  const mergedBytes = Buffer.from(mergedHex, 'hex');
+  const startRel32 = (outputStartup.length + overlay.imageLen + 5) - 100;
+  mergedBytes.writeInt32LE(startRel32, 96);
+  const patchedHex = mergedBytes.toString('hex');
+  content = content.replace(startupHexLine + oldStartupHex, startupHexLine + patchedHex);
   if (overlay.imageLen > HANDLER_IMAGE_MAX) {
     throw new Error('handler overlay ' + overlay.imageLen + ' exceeds HANDLER_IMAGE_MAX ' + HANDLER_IMAGE_MAX);
   }
