@@ -1,0 +1,7 @@
+; test-write.ty - minimal test for opcode 0x51 (WriteFile)
+; Define strings first via opcode 0x12
+12 s6f75747075742e65786500    ; string 0 = "output.exe\0"
+12 s696e7075742e6b7900        ; string 1 = "input.ky\0"
+; opcode 0x51 id str_idx sz: WriteFile(str_idx, state[id], sz)
+51 02 00 04    ; WriteFile(str_idx=0="output.exe", state[2]=buf, sz=4)
+FF

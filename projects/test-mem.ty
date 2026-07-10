@@ -1,0 +1,14 @@
+; test-mem.ty - minimal test for opcode 0x80 (LDB) and 0x84 (memcpy)
+; state_08 = data_base (set by startup to pe_data_rva)
+; data_off starts at 0x4000 (RVA of data section in PE)
+
+; Set state_0F = small literal 0x1234 (used as size)
+30 0f 1234
+
+; memcpy(state[1], data_off=0, sz=4)
+84 01 00 04
+
+; ldb(state[2], state[1], 0)
+80 02 01 00
+
+FF

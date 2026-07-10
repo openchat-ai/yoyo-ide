@@ -1,0 +1,5 @@
+; test-load.ty - minimal test for opcode 0x50 (LoadFile/ReadFile)
+; opcode 0x50 id str_idx: state[id]=LoadFile(str_idx) -> reads file into state[id]
+12 s696e7075742e6b7900    ; string 0 = "input.ky\0"
+50 0a 00                  ; state[0a] = LoadFile("input.ky")
+FF

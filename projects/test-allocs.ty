@@ -1,0 +1,4 @@
+; test-allocs.ty - minimal test for opcode 0x20 (alloc/VirtualAlloc)
+; opcode 0x20 id sz: state[id] = VirtualAlloc(0, sz, 0x3000, 0x40)
+20 02 00001000
+FF
