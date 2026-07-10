@@ -71,10 +71,7 @@ function buildStartup() {
   E.call_rip(b, IAT.GetStdHandle - (CODE_RVA + gsOff + 4 + 6));
   E.add_ri(b, 4, 0x28);         // add rsp, 0x28
   E.mov_rr(b, 14, 0);           // mov r14, rax  (stdout handle)
-  const callOff = b.tell();     // = 95 (same as old jmp_rel offset)
-  E.call_rel(b, 9);              // call overlay at offset 109 (rel32 = 109 - 100 = 9)
-  E.xor_rr(b, 1, 1);             // xor rcx, rcx
-  E.call_rip(b, IAT.ExitProcess - (CODE_RVA + callOff + 14));
+  E.jmp_rel(b, 9);              // jmp to overlay at offset 109 (rel32 = 109 - 100 = 9)
   return b.b.slice(0, b.tell());
 }
 const startupBlob = buildStartup();
