@@ -245,6 +245,10 @@ if (isLinux) {
 }
 
 C('=== Top level: enter main handler (gen1 native + gen2 emitted call) ===');
+C('Allocate fixup arrays before call (needed for fixup recording)');
+L('20 05 1000');
+L('20 06 1000');
+L(SET(0x07, 0) + ' ; fixup_count = 0');
 L('41 00');
 B();
 
